@@ -161,3 +161,78 @@ ${revisions ? section('Revision history', html`<ol class="timeline">${revisions.
 
 // Project form ---------------------------------------------------------------------
 
+export interface ProjectFormView {
+  event: EventRow;
+  team: TeamRow;
+  tracks: TrackRow[];
+  values: Record<string, string>;
+  errors?: Record<string, string>;
+  projectId?: string;
+  status?: string;
+  version?: number;
+}
+
+export function projectFormPage(ctx: Ctx, view: ProjectFormView): SafeHtml {
+  const editing = Boolean(view.projectId);
+  const v = view.values;
+  const e = view.errors ?? {};
+  const action = editing ? `/projects/${view.projectId}/edit` : `/projects/new?event=${view.event.slug}`;
+  return page(ctx, {
+    title: editing ? `Edit ${v.title ?? 'project'}` : 'New project',
+    nav: 'dashboard',
+    body: html`
+${pageHeader(editing ? `Edit “${v.title}”` : 'Start your project', { eyebrow: html`${view.event.name} · ${view.team.name}`, lead: html`Submissions close ${when(view.event.submissions_close_at, ctx.now)}. You can edit until then; after that the server refuses every change.` })}
+${formErrors(e)}
+<form method="post" action="${action}" class="form-card" novalidate>
+  ${csrf(ctx)}
+  ${editing ? html`<input type="hidden" name="version" value="${view.version}">` : ''}
+  ${input({ name: 'title', label: 'Title', value: v.title, required: true, maxlength: 120, error: e.title })}
+  ${input({ name: 'summary', label: 'One-line summary', value: v.summary, maxlength: 280, error: e.summary, hint: 'Shown in the gallery. Required to submit.' })}
+  ${view.tracks.length ? select({ name: 'track_id', label: 'Track', value: v.track_id, blank: 'Choose a track', options: view.tracks.map((t) => ({ value: t.id, label: t.name })), error: e.track_id, hint: 'Judges are assigned by track. Required to submit.' }) : ''}
+  ${textarea({ name: 'description', label: 'Description', value: v.description, rows: 8, maxlength: 10000, error: e.description, hint: 'What it does, how it works, what you would do next. Plain text.' })}
+  <div class="grid-2">
+    ${input({ name: 'repo_url', label: 'Repository URL', type: 'url', value: v.repo_url, error: e.repo_url, placeholder: 'https://…' })}
+    ${input({ name: 'demo_url', label: 'Demo URL', type: 'url', value: v.demo_url, error: e.demo_url, placeholder: 'https://…' })}
+  </div>
+  ${input({ name: 'video_url', label: 'Video URL', type: 'url', value: v.video_url, error: e.video_url, placeholder: 'https://…' })}
+  <p class="hint">To submit you need a summary${view.tracks.length ? ', a track' : ''} and a repository or demo link. A draft can be incomplete.</p>
+  <div class="form-actions">
+    ${view.status === 'submitted'
+      ? button('Save changes')
+      : html`${button('Save draft', { variant: 'secondary', name: 'intent', value: 'draft' })} ${button('Submit project', { name: 'intent', value: 'submit' })}`}
+    <a class="btn btn-ghost" href="${editing ? `/projects/${view.projectId}` : `/events/${view.event.slug}/team`}">Cancel</a>
+  </div>
+</form>`,
+  });
+}
+
+// Events ---------------------------------------------------------------------------
+
+export function eventsPage(ctx: Ctx, events: (EventRow & EventCounts)[], canCreate: boolean): SafeHtml {
+  return page(ctx, {
+    title: 'Events',
+    nav: 'events',
+    body: html`
+${pageHeader('Events', { lead: 'Every hackathon on this instance, newest deadline first.', actions: canCreate ? linkButton('/events/new', 'Create an event', 'primary') : '' })}
+${events.length === 0
+  ? empty('No events yet', canCreate ? 'Create the first one.' : 'An administrator has not created an event yet.')
+  : html`<ul class="event-list">${events.map((e) => html`<li class="card event-card">
+      <div class="card-top">${phasePill(phaseOf(e, ctx.now))}</div>
+      <h2 class="card-title"><a href="/events/${e.slug}">${e.name}</a></h2>
+      ${e.tagline ? html`<p class="card-summary">${e.tagline}</p>` : ''}
+      <p class="card-meta">Deadline ${when(e.submissions_close_at, ctx.now)}</p>
+      <p class="card-meta muted">${e.submitted} submitted · ${e.teams} teams · ${e.judges} judges</p>
+    </li>`)}</ul>`}`,
+  });
+}
+
+export interface EventPageView {
+  event: EventRow;
+  tracks: TrackRow[];
+  prizes: (PrizeRow & { track_name: string | null })[];
+  counts: EventCounts;
+  roles: Set<Role>;
+  team: TeamRow | null;
+  published: boolean;
+}
+
