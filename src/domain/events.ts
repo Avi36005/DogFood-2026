@@ -274,3 +274,82 @@ export function closeSubmissionsNow(store: Store, actor: Actor, event: EventRow)
 
 // Tracks and prizes ------------------------------------------------------------------
 
+export function addTrack(store: Store, actor: Actor, event: EventRow, body: Body): void {
+  requireOrganizer(store, actor, event, `add a track to ${event.name}`);
+  const form = new FormReader(body);
+  const name = form.text('name', { label: 'Track name', required: true, max: 80 });
+  const description = form.text('description', { label: 'Description', max: 1000 });
+  form.assertValid();
+  store.tx(() => {
+    if (store.get('SELECT 1 FROM tracks WHERE event_id = ? AND name = ? COLLATE NOCASE', [event.id, name])) {
+      throw new ValidationError({ name: 'There is already a track with this name.' });
+    }
+    const position = store.get<{ n: number }>('SELECT count(*) AS n FROM tracks WHERE event_id = ?', [event.id])?.n ?? 0;
+    const id = newId('trk');
+    store.run('INSERT INTO tracks (id, event_id, name, description, position) VALUES (?, ?, ?, ?, ?)', [id, event.id, name, description, position]);
+    record(store, actor, { eventId: event.id, action: 'track.added', subjectType: 'track', subjectId: id, summary: `Added the track ${name}.` });
+  });
+}
+
+export function removeTrack(store: Store, actor: Actor, event: EventRow, trackId: string): void {
+  requireOrganizer(store, actor, event, `remove a track from ${event.name}`);
+  store.tx(() => {
+    const track = store.get<TrackRow>('SELECT * FROM tracks WHERE id = ? AND event_id = ?', [trackId, event.id]);
+    if (!track) throw notFound('No such track.');
+    const used = store.get<{ n: number }>('SELECT count(*) AS n FROM projects WHERE track_id = ?', [trackId])?.n ?? 0;
+    if (used > 0) throw conflict(`${track.name} has ${used} project(s), so it cannot be removed.`);
+    store.run('DELETE FROM prizes WHERE track_id = ?', [trackId]);
+    store.run('DELETE FROM tracks WHERE id = ?', [trackId]);
+    record(store, actor, { eventId: event.id, action: 'track.removed', subjectType: 'track', subjectId: trackId, summary: `Removed the track ${track.name}.` });
+  });
+}
+
+export function addPrize(store: Store, actor: Actor, event: EventRow, body: Body): void {
+  requireOrganizer(store, actor, event, `add a prize to ${event.name}`);
+  const form = new FormReader(body);
+  const name = form.text('name', { label: 'Prize name', required: true, max: 120 });
+  const description = form.text('description', { label: 'Description', max: 1000 });
+  const trackIds = listTracks(store, event.id).map((t) => t.id);
+  const trackId = form.choice('track_id', trackIds, 'track', false);
+  form.assertValid();
+  store.tx(() => {
+    const position = store.get<{ n: number }>('SELECT count(*) AS n FROM prizes WHERE event_id = ?', [event.id])?.n ?? 0;
+    const id = newId('prz');
+    store.run('INSERT INTO prizes (id, event_id, track_id, name, description, position) VALUES (?, ?, ?, ?, ?, ?)', [
+      id, event.id, trackId, name, description, position,
+    ]);
+    record(store, actor, { eventId: event.id, action: 'prize.added', subjectType: 'prize', subjectId: id, summary: `Added the prize ${name}.` });
+  });
+}
+
+export function removePrize(store: Store, actor: Actor, event: EventRow, prizeId: string): void {
+  requireOrganizer(store, actor, event, `remove a prize from ${event.name}`);
+  store.tx(() => {
+    const prize = store.get<PrizeRow>('SELECT * FROM prizes WHERE id = ? AND event_id = ?', [prizeId, event.id]);
+    if (!prize) throw notFound('No such prize.');
+    store.run('DELETE FROM prizes WHERE id = ?', [prizeId]);
+    record(store, actor, { eventId: event.id, action: 'prize.removed', subjectType: 'prize', subjectId: prizeId, summary: `Removed the prize ${prize.name}.` });
+  });
+}
+
+// Organizers ------------------------------------------------------------------------
+
+export function listOrganizers(store: Store, eventId: string): { id: string; name: string; email: string }[] {
+  return store.all(
+    `SELECT u.id, u.name, u.email FROM event_roles r JOIN users u ON u.id = r.user_id
+     WHERE r.event_id = ? AND r.role = 'organizer' ORDER BY u.name`,
+    [eventId],
+  );
+}
+
+export function addOrganizer(store: Store, actor: Actor, event: EventRow, email: string): void {
+  const granter = requireOrganizer(store, actor, event, `add an organizer to ${event.name}`);
+  store.tx(() => {
+    const user = store.get<{ id: string; email: string; password_hash: string | null }>('SELECT id, email, password_hash FROM users WHERE email = ?', [email.trim().toLowerCase()]);
+    if (!user) throw new ValidationError({ email: 'No account uses this email. Ask them to sign up first.' });
+    const judges = store.get('SELECT 1 FROM event_roles WHERE event_id = ? AND user_id = ? AND role = ?', [event.id, user.id, 'judge']);
+    if (judges) throw new ValidationError({ email: 'This person judges this event. A judge cannot also organize it, because organizers can read every score.' });
+    grantRole(store, event.id, user.id, 'organizer', granter.id, iso(actor.now));
+    record(store, actor, { eventId: event.id, action: 'role.granted', subjectType: 'user', subjectId: user.id, summary: `Made ${user.email} an organizer.` });
+  });
+}
