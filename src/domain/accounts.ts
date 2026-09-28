@@ -69,3 +69,72 @@ export async function signIn(store: Store, email: string, password: string): Pro
   return ok && user?.password_hash ? user : null;
 }
 
+// One-time password links ---------------------------------------------------------
+
+export interface PasswordLink {
+  token_hash: string;
+  user_id: string;
+  purpose: 'setup' | 'reset';
+  expires_at: string;
+  used_at: string | null;
+}
+
+export function createPasswordLink(store: Store, actor: Actor, user: UserRow, purpose: 'setup' | 'reset', days = 7): string {
+  const token = newToken();
+  store.run(
+    `INSERT INTO password_links (token_hash, user_id, purpose, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
+    [hashToken(token), user.id, purpose, actor.user?.id ?? null, iso(actor.now), iso(addDays(actor.now, days))],
+  );
+  record(store, actor, {
+    action: `account.${purpose}_link`,
+    subjectType: 'user',
+    subjectId: user.id,
+    summary: `A one-time ${purpose === 'setup' ? 'account setup' : 'password reset'} link was issued for ${user.email}.`,
+  });
+  return token;
+}
+
+export function findPasswordLink(store: Store, token: string, now: Date): { link: PasswordLink; user: UserRow } | null {
+  const link = store.get<PasswordLink>('SELECT * FROM password_links WHERE token_hash = ?', [hashToken(token)]);
+  if (!link || link.used_at || link.expires_at <= iso(now)) return null;
+  const user = findUser(store, link.user_id);
+  return user ? { link, user } : null;
+}
+
+/** Sets the password and burns the link in one transaction; a second use of the same link fails. */
+export async function usePasswordLink(store: Store, actor: Actor, token: string, password: string): Promise<UserRow> {
+  const problem = passwordProblem(password);
+  if (problem) throw new ValidationError({ password: problem });
+  const passwordHash = await hashPassword(password);
+  return store.tx(() => {
+    const found = findPasswordLink(store, token, actor.now);
+    if (!found) throw conflict('This link has expired or has already been used. Ask for a new one.');
+    store.run('UPDATE password_links SET used_at = ? WHERE token_hash = ?', [iso(actor.now), found.link.token_hash]);
+    store.run('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, found.user.id]);
+    store.run('UPDATE judge_invites SET accepted_at = ? WHERE user_id = ? AND accepted_at IS NULL', [iso(actor.now), found.user.id]);
+    destroyUserSessions(store, found.user.id);
+    record(store, { ...actor, user: found.user }, {
+      action: 'account.password_set',
+      subjectType: 'user',
+      subjectId: found.user.id,
+      summary: `${found.user.email} set a password with a one-time link.`,
+    });
+    return { ...found.user, password_hash: passwordHash };
+  });
+}
+
+export async function changePassword(store: Store, actor: Actor, user: UserRow, body: Body, keepToken: string): Promise<void> {
+  const form = new FormReader(body);
+  const current = form.raw('current_password');
+  const next = form.raw('new_password');
+  const problem = passwordProblem(next);
+  if (problem) form.fail('new_password', problem);
+  if (!(await verifyPassword(current, user.password_hash))) form.fail('current_password', 'That is not your current password.');
+  form.assertValid();
+  const passwordHash = await hashPassword(next);
+  store.tx(() => {
+    store.run('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, user.id]);
+    destroyUserSessions(store, user.id, keepToken);
+    record(store, actor, { action: 'account.password_changed', subjectType: 'user', subjectId: user.id, summary: `${user.email} changed their password.` });
+  });
+}
