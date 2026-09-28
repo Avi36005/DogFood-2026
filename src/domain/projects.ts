@@ -319,3 +319,65 @@ export function gallery(store: Store, query: GalleryQuery): { items: GalleryItem
   return { items, total, page, pages };
 }
 
+// Duplicates ------------------------------------------------------------------------
+
+export interface TeamSubmissions {
+  team: TeamRow;
+  projects: ProjectRow[];
+}
+
+/** Teams with more than one submission on record, for the organizer's duplicates panel. */
+export function duplicateGroups(store: Store, eventId: string): TeamSubmissions[] {
+  const teams = store.all<TeamRow>(
+    `SELECT t.* FROM teams t WHERE t.event_id = ? AND
+       (SELECT count(*) FROM projects p WHERE p.team_id = t.id AND p.status <> 'draft') > 1 ORDER BY t.name`,
+    [eventId],
+  );
+  return teams.map((team) => ({
+    team,
+    projects: store.all<ProjectRow>("SELECT * FROM projects WHERE team_id = ? AND status <> 'draft' ORDER BY submitted_at", [team.id]),
+  }));
+}
+
+/**
+ * The organizer decides which of a team's submissions is the one that counts. The others
+ * are marked as replaced by it; nothing is deleted, and the decision is audited.
+ */
+export function chooseLiveSubmission(store: Store, actor: Actor, event: EventRow, projectId: string): void {
+  requireOrganizer(store, actor, event, `change which submission counts in ${event.name}`);
+  store.tx(() => {
+    const chosen = getProject(store, projectId);
+    if (chosen.event_id !== event.id) throw notFound('No such project.');
+    if (chosen.status !== 'submitted') throw conflict('Only a submitted project can be the one that counts.');
+    if (!chosen.superseded_by) return;
+    const siblings = store.all<ProjectRow>("SELECT * FROM projects WHERE team_id = ? AND id <> ? AND status <> 'draft'", [chosen.team_id, chosen.id]);
+    // Retire the others first, so the one-live-project-per-team index is never violated mid-way.
+    for (const sibling of siblings) {
+      if (sibling.superseded_by !== chosen.id) {
+        store.run('UPDATE projects SET superseded_by = ?, version = version + 1 WHERE id = ?', [chosen.id, sibling.id]);
+        addRevision(store, actor, { ...sibling, superseded_by: chosen.id, version: sibling.version + 1 }, 'superseded');
+      }
+    }
+    store.run('UPDATE projects SET superseded_by = NULL, version = version + 1 WHERE id = ?', [chosen.id]);
+    addRevision(store, actor, { ...chosen, superseded_by: null, version: chosen.version + 1 }, 'restored');
+    record(store, actor, {
+      eventId: event.id,
+      action: 'project.duplicate_resolved',
+      subjectType: 'project',
+      subjectId: chosen.id,
+      summary: `Made ${chosen.id} “${chosen.title}” the submission that counts for its team; ${siblings.map((s) => s.id).join(', ')} now count as replaced.`,
+    });
+  });
+}
+
+/** Every project in an event, drafts and replaced ones included, for organizers. */
+export function eventProjects(store: Store, eventId: string): (ProjectRow & { team_name: string; track_name: string | null; reviews: number; assigned: number })[] {
+  return store.all(
+    `SELECT p.*, t.name AS team_name, tr.name AS track_name,
+       (SELECT count(*) FROM assignments a JOIN reviews r ON r.assignment_id = a.id WHERE a.project_id = p.id AND r.status = 'submitted') AS reviews,
+       (SELECT count(*) FROM assignments a WHERE a.project_id = p.id) AS assigned
+     FROM projects p JOIN teams t ON t.id = p.team_id LEFT JOIN tracks tr ON tr.id = p.track_id
+     WHERE p.event_id = ? ORDER BY p.status = 'submitted' DESC, p.submitted_at, p.title`,
+    [eventId],
+  );
+}
