@@ -167,3 +167,86 @@ CREATE UNIQUE INDEX projects_one_live_per_team ON projects (team_id)
   WHERE superseded_by IS NULL AND status <> 'withdrawn';
 CREATE INDEX projects_by_event ON projects (event_id, status);
 
+-- Append-only history: answers "what did this team have at the deadline?"
+CREATE TABLE project_revisions (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL REFERENCES projects (id),
+  version    INTEGER NOT NULL,
+  action     TEXT NOT NULL CHECK (action IN ('imported', 'created', 'edited', 'submitted', 'withdrawn', 'superseded', 'restored')),
+  snapshot   TEXT NOT NULL CHECK (json_valid(snapshot)),
+  actor_id   TEXT,
+  at         TEXT NOT NULL,
+  UNIQUE (project_id, version)
+);
+
+-- Judging --------------------------------------------------------------------
+
+CREATE TABLE criteria (
+  id          TEXT PRIMARY KEY,
+  event_id    TEXT NOT NULL REFERENCES events (id) ON DELETE CASCADE,
+  key         TEXT NOT NULL CHECK (key <> '' AND key NOT GLOB '*[^a-z0-9_]*'),
+  name        TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 80),
+  description TEXT NOT NULL DEFAULT '' CHECK (length(description) <= 500),
+  weight      REAL NOT NULL CHECK (weight > 0 AND weight <= 100),
+  position    INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (event_id, key),
+  UNIQUE (id, event_id)
+);
+
+-- Which tracks a judge covers. The judge_role column lets the foreign key require that the
+-- person actually holds the judge role, and removing the role removes the grants.
+CREATE TABLE judge_tracks (
+  event_id   TEXT NOT NULL,
+  judge_id   TEXT NOT NULL,
+  judge_role TEXT NOT NULL DEFAULT 'judge' CHECK (judge_role = 'judge'),
+  track_id   TEXT NOT NULL,
+  PRIMARY KEY (event_id, judge_id, track_id),
+  FOREIGN KEY (event_id, judge_id, judge_role) REFERENCES event_roles (event_id, user_id, role) ON DELETE CASCADE,
+  FOREIGN KEY (track_id, event_id) REFERENCES tracks (id, event_id) ON DELETE CASCADE
+);
+
+-- The judge is created (without a password) when invited; the link lets them claim the account.
+CREATE TABLE judge_invites (
+  token_hash  TEXT PRIMARY KEY,
+  event_id    TEXT NOT NULL REFERENCES events (id) ON DELETE CASCADE,
+  user_id     TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  created_by  TEXT REFERENCES users (id),
+  created_at  TEXT NOT NULL,
+  expires_at  TEXT NOT NULL,
+  accepted_at TEXT
+);
+
+CREATE TABLE assignments (
+  id         TEXT PRIMARY KEY,
+  event_id   TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  judge_id   TEXT NOT NULL,
+  judge_role TEXT NOT NULL DEFAULT 'judge' CHECK (judge_role = 'judge'),
+  source     TEXT NOT NULL CHECK (source IN ('fixture', 'auto', 'manual')),
+  created_by TEXT REFERENCES users (id),
+  created_at TEXT NOT NULL,
+  UNIQUE (project_id, judge_id),
+  UNIQUE (id, event_id),
+  FOREIGN KEY (project_id, event_id) REFERENCES projects (id, event_id),
+  -- No cascade: a judge with reviews on record cannot be silently removed.
+  FOREIGN KEY (event_id, judge_id, judge_role) REFERENCES event_roles (event_id, user_id, role)
+);
+CREATE INDEX assignments_by_judge ON assignments (judge_id, event_id);
+CREATE INDEX assignments_by_event ON assignments (event_id);
+
+CREATE TABLE reviews (
+  assignment_id TEXT PRIMARY KEY REFERENCES assignments (id) ON DELETE CASCADE,
+  status        TEXT NOT NULL CHECK (status IN ('draft', 'submitted')),
+  comment       TEXT NOT NULL DEFAULT '' CHECK (length(comment) <= 5000),
+  submitted_at  TEXT,
+  updated_at    TEXT NOT NULL,
+  CHECK ((status = 'submitted') = (submitted_at IS NOT NULL))
+);
+
+CREATE TABLE review_scores (
+  assignment_id TEXT NOT NULL REFERENCES reviews (assignment_id) ON DELETE CASCADE,
+  criterion_id  TEXT NOT NULL REFERENCES criteria (id),
+  value         INTEGER NOT NULL,
+  PRIMARY KEY (assignment_id, criterion_id)
+);
+
