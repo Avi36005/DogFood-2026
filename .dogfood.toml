@@ -1,0 +1,25 @@
+# .dogfood.toml: where things are in Forgeboard, for the DOGFOOD acceptance checker.
+# Run:  docker compose up   then   python3 run.py .dogfood.toml
+
+[portal]
+base_url = "http://localhost:8080"
+
+[tiers]
+claimed = ["T1", "T2"]
+pitch = "A self-hosted hackathon portal with zero runtime dependencies, backend-enforced judge isolation, and a judge-bias correction chosen and proven on the fixture data."
+
+[auth]
+# Fixed demo sessions, created only when FORGEBOARD_DEMO=1 (docker-compose.yml sets it).
+# The portal prints them at boot. Never enable demo mode on an instance with real data.
+organizer   = "Cookie: session=org_demo_7f2a9c41d8e3b6a5"
+judge_a     = "Cookie: session=jdg_a_demo_91bc5e0f27d4a8c3"
+judge_b     = "Cookie: session=jdg_b_demo_44de83a1c9f06b72"
+participant = "Cookie: session=prt_demo_2e88b7d14c6f3a19"
+
+[routes]
+gallery      = "/projects"
+submit       = "/projects/new"
+judge_scores = "/api/judge/scores"
+# judge_a is jdg_24 (Diego Herrera, 11 reviews); judge_b is jdg_29, who shares no project with them.
+peer_scores  = "/api/judge/scores?judge=jdg_24"
+csv_export   = "/api/export.csv"
