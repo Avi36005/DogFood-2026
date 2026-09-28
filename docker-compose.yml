@@ -1,0 +1,19 @@
+# One command:  docker compose up   then open http://localhost:8080
+# The first start imports fixtures.json and prints the demo sign-ins.
+services:
+  forgeboard:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      # Demo mode: five demo accounts and the fixed sessions in .dogfood.toml.
+      # Remove both lines below to run Forgeboard for a real event.
+      FORGEBOARD_DEMO: "1"
+      FORGEBOARD_SEED_FIXTURES: "1"
+      FORGEBOARD_PUBLIC_URL: "http://localhost:8080"
+    volumes:
+      - forgeboard-data:/data
+    restart: unless-stopped
+
+volumes:
+  forgeboard-data:
