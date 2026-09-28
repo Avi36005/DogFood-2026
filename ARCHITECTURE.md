@@ -84,3 +84,56 @@ access at all and are tested alone: `domain/normalization.ts` (the model fit) an
 
 ## Security in one place
 
+- **Sessions:** 256-bit random tokens. The cookie is `HttpOnly; SameSite=Lax` (`Secure` behind
+  HTTPS), and the database stores only SHA-256 hashes. Sessions last 14 days, sign-out deletes
+  the row, and a password change ends every other session.
+- **CSRF, in three layers:**
+  1. The cookie is `SameSite=Lax`.
+  2. A browser's `Origin` header must be ours.
+  3. Form bodies must carry an HMAC token bound to a per-browser cookie.
+
+  JSON bodies need no token: a cross-site page cannot send `application/json` without a CORS
+  preflight, which this server never approves. A `text/plain` body is refused with 415.
+- **Passwords:** scrypt (N = 16384, r = 8, p = 1) with a per-password salt. The parameters are
+  stored in the hash so they can be raised later. A sign-in for an unknown email still spends
+  the scrypt time.
+- **Input:** a 1 MB body limit, every field length-checked, and URLs restricted to `http(s)`.
+  SQL is parameterized everywhere.
+- **Output:** HTML escaped by default. CSV cells starting with `= + - @` are prefixed.
+  Security headers go on every response.
+
+The full analysis is in [THREAT-MODEL.md](THREAT-MODEL.md).
+
+## Operability
+
+- **Boot** (`boot.ts`) is idempotent and safe on every start:
+  1. Migrate.
+  2. Generate a signing secret once.
+  3. Import the fixtures if asked (skipped if the event exists).
+  4. Seed demo mode, or print a first-administrator link.
+
+  The first start takes about 0.1 s after the image is built.
+- **Health:** `GET /healthz` runs a query. The container health check uses it.
+- **Operator CLI:** `src/cli.ts` covers `backup` (a consistent `VACUUM INTO` copy while running),
+  `import`, `password-link` and `make-admin`.
+- **Logs:** the boot summary goes to stdout, and unexpected errors go to stderr with method and
+  path. Refusals and changes go to the audit table, not the log.
+- **Shutdown:** SIGTERM and SIGINT close the server and the database cleanly.
+
+## Testing
+
+`npm test` runs Node’s built-in test runner over `tests/`: 145 tests in about 11 seconds, including a crawl of every link and a press of every button as every role.
+
+- **Unit tests** cover the model, the planner, deadlines, CSV, escaping and passwords.
+- **Data tests** run against an in-memory database and cover the importer and schema constraints.
+- **HTTP tests** start real servers on random ports with throwaway databases. They drive the real
+  forms with a cookie-and-CSRF-aware client, and include the full lifecycle, the authorization
+  matrix and the checker's seven behaviours.
+
+Tests never touch `./data` or a running instance.
+
+## What is deliberately not here
+
+No background worker, queue, cache, or ORM. No client-side routing, no CSS framework, no web
+fonts. The system fonts are fine, and a font download would break the offline rule. Each would
+add a moving part without adding a requirement met.
