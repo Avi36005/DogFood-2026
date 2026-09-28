@@ -250,3 +250,87 @@ CREATE TABLE review_scores (
   PRIMARY KEY (assignment_id, criterion_id)
 );
 
+-- A score must use a criterion of the same event and sit inside that event's scale.
+CREATE TRIGGER review_scores_valid_insert BEFORE INSERT ON review_scores
+BEGIN
+  SELECT RAISE(ABORT, 'criterion belongs to another event')
+  WHERE (SELECT a.event_id FROM assignments a WHERE a.id = NEW.assignment_id)
+     IS NOT (SELECT c.event_id FROM criteria c WHERE c.id = NEW.criterion_id);
+  SELECT RAISE(ABORT, 'score outside the event scale')
+  WHERE NOT EXISTS (
+    SELECT 1 FROM criteria c JOIN events e ON e.id = c.event_id
+    WHERE c.id = NEW.criterion_id AND NEW.value BETWEEN e.score_min AND e.score_max);
+END;
+
+CREATE TRIGGER review_scores_valid_update BEFORE UPDATE ON review_scores
+BEGIN
+  SELECT RAISE(ABORT, 'score outside the event scale')
+  WHERE NOT EXISTS (
+    SELECT 1 FROM criteria c JOIN events e ON e.id = c.event_id
+    WHERE c.id = NEW.criterion_id AND NEW.value BETWEEN e.score_min AND e.score_max);
+END;
+
+-- Results --------------------------------------------------------------------
+
+-- A published ranking, frozen with the method and inputs that produced it.
+CREATE TABLE result_snapshots (
+  id            TEXT PRIMARY KEY,
+  event_id      TEXT NOT NULL REFERENCES events (id) ON DELETE CASCADE,
+  method        TEXT NOT NULL,
+  lambda        REAL NOT NULL,
+  weights       TEXT NOT NULL CHECK (json_valid(weights)),
+  review_count  INTEGER NOT NULL,
+  published_at  TEXT NOT NULL,
+  published_by  TEXT REFERENCES users (id),
+  superseded_at TEXT
+);
+CREATE UNIQUE INDEX result_snapshots_one_current ON result_snapshots (event_id)
+  WHERE superseded_at IS NULL;
+
+CREATE TABLE result_rows (
+  snapshot_id  TEXT NOT NULL REFERENCES result_snapshots (id) ON DELETE CASCADE,
+  project_id   TEXT NOT NULL REFERENCES projects (id),
+  rank         INTEGER NOT NULL CHECK (rank >= 1),
+  score        REAL NOT NULL,
+  raw_mean     REAL NOT NULL,
+  review_count INTEGER NOT NULL,
+  low_coverage INTEGER NOT NULL CHECK (low_coverage IN (0, 1)),
+  PRIMARY KEY (snapshot_id, project_id)
+);
+
+CREATE TABLE result_judge_offsets (
+  snapshot_id  TEXT NOT NULL REFERENCES result_snapshots (id) ON DELETE CASCADE,
+  judge_id     TEXT NOT NULL REFERENCES users (id),
+  offset       REAL NOT NULL,
+  review_count INTEGER NOT NULL,
+  PRIMARY KEY (snapshot_id, judge_id)
+);
+
+-- Audit ----------------------------------------------------------------------
+
+-- Append-only. No foreign keys, so the record outlives what it describes, and the actor's
+-- name is copied in so the log reads without joins.
+CREATE TABLE audit_log (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  at           TEXT NOT NULL,
+  event_id     TEXT,
+  actor_id     TEXT,
+  actor_label  TEXT NOT NULL,
+  action       TEXT NOT NULL,
+  subject_type TEXT,
+  subject_id   TEXT,
+  summary      TEXT NOT NULL,
+  detail       TEXT CHECK (detail IS NULL OR json_valid(detail)),
+  ip           TEXT
+);
+CREATE INDEX audit_log_by_event ON audit_log (event_id, id);
+
+CREATE TRIGGER audit_log_no_update BEFORE UPDATE ON audit_log
+BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
+CREATE TRIGGER audit_log_no_delete BEFORE DELETE ON audit_log
+BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
+
+CREATE TRIGGER project_revisions_no_update BEFORE UPDATE ON project_revisions
+BEGIN SELECT RAISE(ABORT, 'project_revisions is append-only'); END;
+CREATE TRIGGER project_revisions_no_delete BEFORE DELETE ON project_revisions
+BEGIN SELECT RAISE(ABORT, 'project_revisions is append-only'); END;
