@@ -81,3 +81,70 @@ describe('fixture import', () => {
   });
 });
 
+describe('constraints carried by the schema', () => {
+  let store: Store;
+  beforeEach(() => {
+    store = new Store(':memory:');
+    migrate(store);
+    importFixtures(store, systemActor(), fixture());
+  });
+
+  test('the audit log is append-only', () => {
+    assert.throws(() => store.run('UPDATE audit_log SET summary = ?', ['rewritten']), /append-only/);
+    assert.throws(() => store.run('DELETE FROM audit_log'), /append-only/);
+  });
+
+  test('project revisions are append-only', () => {
+    assert.throws(() => store.run('DELETE FROM project_revisions'), /append-only/);
+  });
+
+  test('a score outside the event scale is rejected by the database', () => {
+    const row = store.get<{ assignment_id: string; criterion_id: string }>('SELECT assignment_id, criterion_id FROM review_scores LIMIT 1');
+    assert.throws(() => store.run('UPDATE review_scores SET value = 9 WHERE assignment_id = ? AND criterion_id = ?', [row?.assignment_id ?? '', row?.criterion_id ?? '']), /scale/);
+  });
+
+  test('a team cannot have two live projects', () => {
+    assert.throws(() => store.run("UPDATE projects SET superseded_by = NULL WHERE id = 'prj_07'"), /UNIQUE/);
+  });
+
+  test('a project cannot point at another event’s track', () => {
+    store.run("INSERT INTO events (id, slug, name, submissions_close_at, created_at, updated_at) VALUES ('evt_x', 'x', 'X', '2030-01-01T00:00:00.000Z', '', '')");
+    store.run("INSERT INTO tracks (id, event_id, name) VALUES ('trk_x', 'evt_x', 'Other')");
+    assert.throws(() => store.run("UPDATE projects SET track_id = 'trk_x' WHERE id = 'prj_01'"), /FOREIGN KEY/);
+  });
+
+  test('a judge cannot be assigned without holding the judge role in that event', () => {
+    assert.throws(
+      () => store.run("INSERT INTO assignments (id, event_id, project_id, judge_id, source, created_at) VALUES ('a1', 'evt_01', 'prj_01', 'usr_ecef4d6b84b1', 'manual', '')"),
+      /FOREIGN KEY/,
+    );
+  });
+
+  test('the same judge cannot be assigned the same project twice', () => {
+    const existing = store.get<{ project_id: string; judge_id: string }>('SELECT project_id, judge_id FROM assignments LIMIT 1');
+    assert.throws(
+      () => store.run("INSERT INTO assignments (id, event_id, project_id, judge_id, source, created_at) VALUES ('a2', 'evt_01', ?, ?, 'manual', '')", [existing?.project_id ?? '', existing?.judge_id ?? '']),
+      /UNIQUE/,
+    );
+  });
+
+  test('a transaction that fails leaves nothing behind', () => {
+    assert.throws(() => store.tx(() => {
+      store.run("INSERT INTO settings (key, value) VALUES ('probe', '1')");
+      throw new Error('boom');
+    }), /boom/);
+    assert.equal(store.get("SELECT 1 FROM settings WHERE key = 'probe'"), undefined);
+  });
+});
+
+describe('judge flags on the fixture', () => {
+  test('tell the planted constant judge apart from a judge whose totals happen to tie', () => {
+    const store = new Store(':memory:');
+    migrate(store);
+    importFixtures(store, systemActor(), fixture());
+    const judges = new Map(computeStandings(store, getEvent(store, 'evt_01')).judges.map((j) => [j.judge_id, j.flags]));
+    assert.deepEqual(judges.get('jdg_07'), ['identical-scores'], '4/4/4 on every review');
+    assert.deepEqual(judges.get('jdg_19'), ['same-total'], '(3,5,3), (3,4,4), (5,4,2): different criteria, equal totals');
+    assert.equal(judges.has('jdg_01'), false, 'its only review was of the replaced duplicate');
+  });
+});
