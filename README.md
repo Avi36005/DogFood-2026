@@ -316,3 +316,322 @@ reproduces [its output](research/normalization-study-output.md) exactly.
 | Offsets, no shrinkage (λ = 0) | 0.700 | 0.705 | 0.701 | 0.715 |
 | **Offsets, λ = 2 (Forgeboard)** | **0.867** | **0.857** | **0.819** | 0.900 |
 
+*Mean Spearman rank correlation with the true quality; higher is better.*
+
+- **Per-judge z-scores do worse than doing nothing** unless bias is strong. A judge's spread
+  estimated from three reviews is mostly noise.
+- **Unshrunk offsets are the worst option.** They overfit the judges with one or two reviews.
+- **Shrunk offsets win in every biased scenario**, and when there is no bias they cost almost
+  nothing (0.900 against 0.904). λ sits on a flat plateau: anything from 0.5 to 3 scores 0.862–0.865.
+
+### On the real fixture
+
+| | |
+|---|---|
+| Reviews in the fit | 121: the file's 126, minus the 5 on the replaced duplicate `prj_07` |
+| Overall mean μ | 3.576 on the 1–5 scale |
+| Spread of per-judge mean scores | **σ = 0.42 raw** across all 126 scores and 30 judges, the figure on the DOGFOOD site. On the 121 reviews that are ranked: **0.33 raw → 0.19** once each judge's fitted offset is removed |
+| Projects that change rank | 29 of 40, by at most 6 places |
+| Harshest judges | `jdg_10` −0.39 (3 reviews), `jdg_27` −0.29 (2), `jdg_25` −0.25 (5) |
+| Most generous judges | `jdg_02` +0.39 (6), `jdg_15` +0.37 (6), `jdg_13` +0.27 (3) |
+| Top three | 1 Iron Switch (4.303, raw 4.333) · 2 Salt Ledger (4.291, raw 4.333, tied first on raw) · 3 Dry Relay (4.185, raw rank 4) |
+
+*σ is the sample standard deviation, across judges, of each judge's mean review score (the three
+criteria equally weighted). The spread does not go to zero, by design: shrinkage keeps part of a
+thinly observed judge's difference, and some of it is genuinely the projects they drew.*
+
+The organizer sees all of this on **Results**, as a raw-versus-normalized table with rank
+movement and every judge's offset. The same numbers are in the results CSV, and the test
+*reproduces the documented numbers* pins them.
+
+### The fixture's awkward cases, and what we did about each
+
+| Case | What the data shows | What Forgeboard does |
+|---|---|---|
+| **The judge who marks everything the same** | `jdg_07` scored 4/4/4 on all three reviews | Flagged **"identical scores"** for the organizer. The reviews still count; their generosity is absorbed by their offset (+0.26), and they cannot reorder their own projects, so no data is thrown away |
+| **A judge whose totals only look flat** | `jdg_19` gave varied criterion scores, but under equal weights each review totals 11/15 | A separate, softer **"same total"** flag, which disappears if the organizer reweights. Found while testing; we split the flag so it would not misdescribe that judge |
+| **Two unfinished review batches** | Not labelled in the file; they show up as 2 to 5 reviews per project | Nothing assumes a complete matrix. Coverage per project and track is on the dashboard, auto-assign tops short projects up, and thin rankings are flagged. Which scores belonged to which batch is not recoverable from the file, and we say so instead of guessing |
+| **The duplicate submission** | `prj_41` "Dry Harbour" resubmits `prj_07`, same team, 3 minutes before the deadline | **One live project per team**, enforced by a unique index. The latest counts; the earlier one is kept with its reviews, marked *replaced by*, and hidden from gallery and ranking. The organizer can reverse the decision with one click, and both directions are audited |
+| **Judges with few reviews** | 7 of 29 judges filed two or fewer | Kept and flagged. Shrinkage keeps their offsets small, where a "3 reviews minimum" rule would discard 12 of the 121 reviews |
+| **Teams that share a name** | Three "StillTrail" teams, and two pairs more, with different members | Kept as separate teams and reported at import. New teams must choose an unused name |
+
+---
+
+## 6. How it is built
+
+```text
+            docker compose up
+┌──────────────────────────────────────────────────────────────────────────┐
+│ container: node:24-alpine, runs as user "node"                           │
+│                                                                          │
+│   node:http ──► http/app.ts ──► routes/*.ts ──► domain/*.ts ──► db/store  │
+│                 security headers   parse, render   rules + authorization  │
+│                 session lookup     pick HTML/JSON  one transaction each   │
+│                 CSRF check                                                │
+│                 error boundary ◄── HttpError / AccessDenied (audited)     │
+│                                                                          │
+│   volume /data ── forgeboard.db (SQLite, WAL) ── the only state there is  │
+└──────────────────────────────────────────────────────────────────────────┘
+        no egress, no second service, no API key, no npm install
+```
+
+Dependencies point one way: `http → routes → domain → db`. The domain never sees a request, so
+the same function serves the HTML form, the JSON API and the tests.
+
+**Decisions worth stealing** (each is argued, with its cost, in [ARCHITECTURE.md](ARCHITECTURE.md)):
+- **Zero runtime dependencies.** The image cannot break on a registry outage, it builds offline,
+  and there is no supply chain to audit.
+- **The phase is computed, never stored.** "Open", "judging" and "published" are derived from the
+  dates, so the label can never disagree with the rule that enforces it.
+- **The deadline check runs first, inside `BEGIN IMMEDIATE`.** Nothing can slip in between the
+  check and the commit.
+- **The database enforces the rules too:** one live project per team, a judge assigned to a project
+  at most once, scores inside the event's scale, no cross-event references, and an append-only
+  audit log and revision history. These are indexes, composite foreign keys and triggers, each with
+  a test. See [DATA-MODEL.md](DATA-MODEL.md#rules-the-database-enforces-whatever-the-code-does).
+- **Raw scores stored, derived values recomputed.** Weights can change without rewriting reviews,
+  and published results live in immutable snapshots.
+- **Escaping by default and a strict CSP** (`script-src 'self'; style-src 'self'`, nothing inline).
+  An injected script would not run even if escaping failed.
+- **TypeScript with no build step.** Node runs it directly (type stripping); `tsc` is a
+  development check only.
+
+### Repository layout
+
+```text
+.
+├── README.md  ARCHITECTURE.md  DATA-MODEL.md  JUDGING.md  THREAT-MODEL.md  DEMO-SCRIPT.md
+├── .dogfood.toml           where things are, for the checker (claims T1 and T2)
+├── acceptance-report.txt   the checker's output, committed
+├── docker-compose.yml      one command, demo mode on
+├── Dockerfile              node:24-alpine, no npm install, runs as a non-root user
+├── LICENSE                 MIT
+├── run.py  fixtures.json   the organizers' files, unmodified
+├── src/
+│   ├── server.ts  boot.ts  cli.ts  config.ts
+│   ├── http/      app, context (cookies, body, CSRF), router, rate limit, static files
+│   ├── routes/    public, auth, teams, judge, organize, admin, api
+│   ├── domain/    the rules: access, accounts, events, teams, projects, judging, assignment,
+│   │              rubric, normalization, results, progress, exports, fixtures, audit, demo
+│   ├── views/     HTML as escaped template literals
+│   ├── db/        store (prepared statements, transactions), migrations/001_initial.sql
+│   └── util/      errors, forms, CSV, time, tokens
+├── static/        app.css, app.js (about 70 lines of progressive enhancement), favicon
+├── tests/
+│   ├── unit/      normalization, assignment, deadline, data and schema, utilities
+│   └── http/      checker, authorization matrix, lifecycle, organizer, security, crawl, buttons
+├── research/      the normalization simulation and its seeded output
+└── scripts/       browser-check.ts (headless Chrome), offline-check.sh (network off)
+```
+
+---
+
+## 7. Verification: what we ran and what it said
+
+All of these were run on the final code in this repository.
+
+| Check | Result | Reproduce with |
+|---|---|---|
+| Official checker against a fresh `docker compose up` | **7 of 7 PASS**, `claimed T1 T2, verified T1 T2`, byte-identical to the committed report | `python3 run.py .dogfood.toml` |
+| Our test suite | **145 of 145 pass**: about 12 s in `node:24-alpine`, about 20 s on a laptop | `npm test`, or the Docker command in [step 4](#step-4-run-our-tests-with-nothing-but-docker) |
+| Type check | Clean under `strict`, `noUncheckedIndexedAccess` and `erasableSyntaxOnly` | `npm install && npm run typecheck` (TypeScript is a development dependency only) |
+| Real browser | **16 of 16**: sign-in by form, the phone menu, copy buttons, two-step confirms, the live dashboard refresh, keyboard scoring, and no JavaScript or console errors on any page | `npm run check:browser` (needs Chrome) |
+| Network off | Builds with `--network none`, runs with no network interface, serves gallery, scores and CSV; egress fails | `sh scripts/offline-check.sh` |
+| Every page, every role | Visitor, participant, judge and organizer pages at desktop and phone width: no console errors, no broken images, no horizontal scroll | Headless Chrome pass during development |
+
+What the 145 tests cover:
+- **The seven checker behaviours**, with the *reason* behind each answer, not only the status code
+- **An authorization matrix**: every role against every protected route and action
+- **A full event lifecycle through the real forms**: create → teams → submit → invite judges → close → auto-assign → score → publish
+- **A crawl of every link and a press of every button**, as every role
+- **Security**: CSRF, cross-origin posts, session cookies, open redirects, rate limiting, escaping, and demo mode being off by default
+- **The importer**: counts, idempotency, the duplicate policy, and all-or-nothing refusal of a bad file
+- **The constraints the schema enforces**, one test each
+- **Normalization**: hand-computed cases, determinism, and a regression on the fixture's numbers
+
+---
+
+## 8. Running it for a real event
+
+1. **Turn demo mode off.** Delete the `FORGEBOARD_DEMO` and `FORGEBOARD_SEED_FIXTURES` lines in
+   `docker-compose.yml`. The demo tokens and password in this README are public and must never
+   guard real data.
+2. **Start it.** With no administrator yet, the first start prints a one-time link to set the
+   administrator's password, for the email in `FORGEBOARD_ADMIN_EMAIL` (default `admin@localhost`).
+3. **Put it behind HTTPS** (Caddy, nginx or a tunnel) and set `FORGEBOARD_COOKIE_SECURE=1`,
+   `FORGEBOARD_TRUST_PROXY=1` and `FORGEBOARD_PUBLIC_URL=https://your.host`. Invite links use that
+   URL, and the proxy's `X-Forwarded-For` gives rate limits and the audit trail the real client
+   address.
+4. **Create the event** (Events → Create an event), set the rubric weights, invite judges, and share
+   the event page with participants.
+5. **Back up** while it runs, then copy the file off the volume:
+   ```sh
+   docker compose exec forgeboard node src/cli.ts backup /data/backup-$(date +%F).db
+   docker compose cp forgeboard:/data/backup-$(date +%F).db .
+   ```
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `FORGEBOARD_PORT` | `8080` | Port to listen on |
+| `FORGEBOARD_DB_PATH` | `./data/forgeboard.db` (`/data/forgeboard.db` in Docker) | The SQLite database, the only state there is |
+| `FORGEBOARD_PUBLIC_URL` | `http://localhost:<port>` | Base of links printed for invites and password resets |
+| `FORGEBOARD_DEMO` | off | Demo accounts and fixed checker sessions. **Evaluation only** |
+| `FORGEBOARD_SEED_FIXTURES` | follows `FORGEBOARD_DEMO` | Import `FORGEBOARD_FIXTURES` on start (once; later starts skip it) |
+| `FORGEBOARD_FIXTURES` | `./fixtures.json` | A file in the DOGFOOD fixtures format |
+| `FORGEBOARD_ADMIN_EMAIL` | `admin@localhost` | First administrator when demo mode is off |
+| `FORGEBOARD_COOKIE_SECURE` | off | Mark cookies `Secure` (set it behind HTTPS) |
+| `FORGEBOARD_TRUST_PROXY` | off | Read the client address from `X-Forwarded-For` (only behind a proxy you control) |
+| `FORGEBOARD_SECRET` | generated, stored in the database | Signing key for CSRF tokens |
+
+**Operator commands** (`node src/cli.ts <command>`, or `docker compose exec forgeboard node src/cli.ts <command>`):
+
+| Command | What it does |
+|---|---|
+| `backup <file>` | A consistent copy of the database (`VACUUM INTO`), safe while the server runs |
+| `import <fixtures.json>` | Bulk import of an event: validated first, then written all or nothing |
+| `password-link <email>` | Account recovery without a mail server |
+| `make-admin <email>` | Give an account administrator access |
+
+Operations in brief: boot is idempotent (migrate, generate the secret once, import if asked, seed
+demo mode or print the first-administrator link). `GET /healthz` runs a query and backs the
+container health check. SIGTERM closes the server and the database cleanly. Refusals and changes
+go to the audit table, not the log.
+
+---
+
+## 9. Getting data in and out
+
+A platform you cannot leave is a trap, so both directions are first-class.
+
+**In:**
+- **The DOGFOOD fixtures format**, on first start or with `cli.ts import`. The whole file is
+  validated first (shape, every cross-reference, scores out of range, a judge who is also on a
+  team), then written in one transaction. A bad file changes nothing, and importing the same event
+  twice is a no-op. Fixture ids are kept as primary keys, so `prj_07` in the database is `prj_07`
+  in the file.
+- **Accounts** by sign-up, by judge invitation, or by import (imported people claim their account
+  with a one-time link).
+
+**Out:**
+- **CSV at every stage** from the organizer's **Export** tab or
+  `GET /api/export.csv?event=<id>&kind=<kind>`. RFC 4180, UTF-8, CRLF line endings.
+
+  | `kind` | Contents |
+  |---|---|
+  | `results` | The ranking with raw means, normalized scores and raw ranks |
+  | `reviews` | Every review with each criterion, the weighted score and the comment |
+  | `projects` | Every project, including drafts and replaced ones |
+  | `judges` | Tracks, progress, fitted offset and flags |
+  | `assignments` | Who reviews what, and how each assignment was made |
+  | `audit` | The event's full audit trail |
+
+- **The whole database** with `cli.ts backup`: one plain SQLite file, every table described in
+  [DATA-MODEL.md](DATA-MODEL.md).
+- **JSON** for reads and the main writes. `GET /api` lists them:
+
+  | Endpoint | Access |
+  |---|---|
+  | `GET /api/me` | You, and your roles per event |
+  | `GET /api/events`, `GET /api/events/{id}` | Public: events with tracks, prizes and rubric |
+  | `GET /api/events/{id}/results` | Public once published |
+  | `GET /api/events/{id}/progress` | Organizers |
+  | `GET /api/projects?q=&event=&track=&sort=&page=`, `GET /api/projects/{id}` | The public gallery, and one project if you may see it |
+  | `POST /projects/new?event={id}`, `POST /projects/{id}/edit` | Participants, JSON body, deadline enforced, `version` for conflict detection |
+  | `GET /api/judge/scores[?judge=&event=]` | Your own scores as a judge; another judge's only as an organizer of their event |
+  | `GET /api/export.csv?event={id}&kind=…` | Organizers |
+
+---
+
+## 10. Developing without Docker
+
+You need **Node 24 or later**: it runs TypeScript directly and ships SQLite.
+
+```sh
+FORGEBOARD_DEMO=1 npm start      # http://localhost:8080, data in ./data/forgeboard.db
+npm run dev                      # the same, restarting on changes, data in ./data/dev.db
+npm test                         # 145 tests
+npm install && npm run typecheck   # type check; installs TypeScript, the only (dev) dependency
+npm run check:browser            # the 16 headless Chrome checks
+npm run check:offline            # the network-off proof (needs Docker)
+npm run study                    # rerun the normalization simulation
+```
+
+Adding a feature: add the rule to `src/domain/`, starting with the authorization check it needs;
+call it from a route in `src/routes/`; render in `src/views/`. Schema changes go in a new
+forward-only migration, `src/db/migrations/002_….sql`; the shipped schema is never edited in place.
+
+---
+
+## 11. Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `port is already allocated` on 8080 | Something else uses the port. Stop it, or map another port (`"8081:8080"` in `docker-compose.yml`) and change `base_url` in `.dogfood.toml` to match |
+| `Cannot connect to the Docker daemon` | Start Docker Desktop (or the Docker service) and run `docker compose up` again |
+| The build fails with the network off | The base image is not cached yet. Run `docker pull node:24-alpine` once while online |
+| The checker prints `fixtures.json was not found` | Run it from the repository root, where `fixtures.json` sits next to `run.py` |
+| Stale data, or you want the fixtures fresh | `docker compose down -v && docker compose up` deletes the volume and re-imports |
+| The demo sessions return 401 | Demo mode is off. `FORGEBOARD_DEMO: "1"` must be set in `docker-compose.yml` for evaluation |
+| `npm start` fails with a syntax or `node:sqlite` error | Your Node is older than 24. Use Docker, or install Node 24 |
+
+---
+
+## 12. Where to look, by scoring criterion
+
+| Criterion | Weight | Evidence in this repository |
+|---|---|---|
+| **Tier completion and correctness** | 40% | [`acceptance-report.txt`](acceptance-report.txt): 7 of 7. [`.dogfood.toml`](.dogfood.toml) claims exactly T1 and T2, and [section 13](#13-honest-limitations) lists what is missing. 145 tests, including the lifecycle through the real forms |
+| **Judging integrity** | 25% | Isolation in the domain layer, tested as a matrix ([section 4](#4-who-can-see-what-backend-enforced-isolation)). A normalization method with evidence and stated limits ([JUDGING.md](JUDGING.md)). An append-only audit trail an organizer reads in plain sentences, including refused attempts. Abuse considered up front ([THREAT-MODEL.md](THREAT-MODEL.md)) |
+| **Adoptability and operability** | 20% | One command, network off, seeded with the fixtures. Zero runtime dependencies. Production steps, settings, backup and recovery ([section 8](#8-running-it-for-a-real-event)). Import and export at every stage ([section 9](#9-getting-data-in-and-out)). MIT |
+| **Code quality and innovation** | 15% | One-way layering, a schema that enforces its own invariants ([DATA-MODEL.md](DATA-MODEL.md)), strict TypeScript with no build step, and the decisions in [ARCHITECTURE.md](ARCHITECTURE.md), each with the cost we accepted |
+
+**Bonus challenges:**
+
+| Challenge | Status |
+|---|---|
+| Normalization Proof | **Done.** The method, derivation, worked example, simulation evidence on the fixture's layout and the fixture's numbers are in [JUDGING.md §3](JUDGING.md#3-normalization-correcting-for-harsh-and-generous-judges). Raw and normalized scores and rank changes are on the organizer's Results page and in the results CSV |
+| Threat Model | **Done.** [THREAT-MODEL.md](THREAT-MODEL.md): late teams, curious judges, colluding judges, organizers under pressure, credential stuffing, CSRF, injected scripts, CSV formulas and session theft, each with where it is stopped, plus what is *not* defended |
+| API First | Partial and **not claimed**: the JSON API covers reads and the main writes, but not every UI action, and there is no OpenAPI document |
+| Pairwise Mode | Not attempted. JUDGING.md §7 sketches how a Bradley–Terry mode would fit |
+
+---
+
+## 13. Honest limitations
+
+- **T3 and T4 are not built.** There is no community voting and no comments, and no webhooks,
+  certificates or embeddable widget. The acceptance checker only tests T1 and T2, and we claim
+  exactly those.
+- **The JSON API does not cover every action**, and there is no OpenAPI document.
+- **No email.** Invitations, judge invites and password resets are one-time links a person passes
+  on. That keeps the portal offline and dependency-free, but an administrator handles lost
+  passwords (`cli.ts password-link` or the Admin page).
+- **One process, one SQLite file.** That is plenty for a hackathon (the whole fixture imports in
+  about 50 ms, and a page renders in a few milliseconds), but it does not scale horizontally. The
+  sign-in rate limiter lives in memory, so it resets on restart.
+- **No file uploads.** Projects link to their repository, demo and video instead of hosting images.
+- **The fixture has no review timestamps**, so imported reviews are stamped with the import time and
+  the dashboard marks them as imported rather than recent.
+- **The fixture's "two unfinished batches" are not labelled**, so they appear as uneven coverage
+  rather than as named batches.
+- **Normalization is a model fit, not proof of fairness.** A judge whose projects were all genuinely
+  strong looks like a generous judge. The assumptions are in
+  [JUDGING.md](JUDGING.md#limits-stated-plainly).
+- **Demo mode ships known credentials.** They are clearly labelled, off unless enabled, and must stay
+  off for real events.
+
+---
+
+## 14. Documents in this repository
+
+| Document | What is in it |
+|---|---|
+| [JUDGING.md](JUDGING.md) | Assignment, the weighted rubric, the normalization method with its derivation and evidence, the awkward cases, isolation and publishing |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | The request path, the layers, the decisions worth defending with their costs, security and operability |
+| [DATA-MODEL.md](DATA-MODEL.md) | Every table, the rules the schema enforces, and the ways in and out |
+| [THREAT-MODEL.md](THREAT-MODEL.md) | Who might attack a judging portal, how, what stops them, and what does not |
+| [DEMO-SCRIPT.md](DEMO-SCRIPT.md) | The five-minute lifecycle demo, click by click |
+| [acceptance-report.txt](acceptance-report.txt) | The official checker's output |
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
