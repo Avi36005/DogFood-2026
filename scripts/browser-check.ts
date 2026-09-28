@@ -85,3 +85,86 @@ const click = async (selector: string) => {
 const key = (k: string, code: number) => send('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code: k, windowsVirtualKeyCode: code });
 const viewport = (width: number, mobile = false) => send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile });
 
+const results: [string, boolean][] = [];
+const check = (name: string, ok: unknown) => results.push([name, Boolean(ok)]);
+await send('Page.enable');
+await send('Runtime.enable');
+await send('Network.enable');
+await send('Log.enable');
+
+try {
+  await viewport(1280);
+  await go('/login');
+  await js(`document.querySelector('#email').value = 'organizer@forgeboard.local'; document.querySelector('#password').value = 'forgeboard-demo'`);
+  await click('form[action^="/login"] button[type=submit]');
+  check('signing in with the form lands on the dashboard', (await js('location.pathname')) === '/dashboard');
+
+  await go('/events/sample-hack-2026');
+  check('UTC times carry a local-time tooltip', String(await js(`document.querySelector('time[datetime]')?.title`)).startsWith('Your time:'));
+
+  await go('/organize/sample-hack-2026/results');
+  await js(`document.querySelector('details.confirm summary').click()`);
+  check('a two-step confirm opens to show the confirming button', await js(`document.querySelector('details.confirm').open`));
+
+  await go('/organize/sample-hack-2026');
+  await sleep(11_000);
+  check('the organizer overview refreshes itself every 10 seconds', await js(`performance.getEntriesByType('resource').some((e) => e.name.endsWith('/organize/sample-hack-2026/progress'))`));
+  check('the refreshed region still shows the dashboard', String(await js(`document.querySelector('[data-live]').textContent`)).includes('Submitted projects'));
+
+  await viewport(390, true);
+  await go('/projects');
+  const navShown = () => js(`getComputedStyle(document.getElementById('site-nav')).display !== 'none'`);
+  check('on a phone the menu starts closed', !(await navShown()));
+  await js(`document.querySelector('.nav-toggle').click()`);
+  check('the Menu button opens the navigation', (await navShown()) && (await js(`document.querySelector('.nav-toggle').getAttribute('aria-expanded')`)) === 'true');
+  await key('Escape', 27);
+  await sleep(100);
+  check('Escape closes the menu and returns focus to the button', !(await navShown()) && (await js('document.activeElement.className')) === 'nav-toggle');
+
+  await viewport(1280);
+  await send('Network.clearBrowserCookies');
+  await go('/signup');
+  await js(`document.querySelector('#name').value = 'Browser Bea'; document.querySelector('#email').value = 'bea@example.com'; document.querySelector('#password').value = 'bea-password'`);
+  await click('form[action^="/signup"] button[type=submit]');
+  check('signing up with the form signs the person in', (await js(`document.querySelector('.nav-me')?.textContent`)) === 'Browser Bea');
+  await go('/events/qa-open/team');
+  await js(`document.querySelector('#name').value = 'Browser Team'`);
+  await click('form[action="/events/qa-open/team"] button[type=submit]');
+  check('creating a team shows the invite link', String(await js(`document.getElementById('invite-link')?.value`)).includes('/join/'));
+  await js(`document.querySelector('[data-copy]').click()`);
+  await sleep(200);
+  check('the Copy button confirms with "Copied"', (await js(`document.querySelector('[data-copy]').textContent`)) === 'Copied');
+
+  await go('/projects/new?event=qa-open');
+  await js(`document.querySelector('#title').value = 'Browser Build'`);
+  await click('button[value=draft]');
+  check('Save draft creates a private draft', String(await js('document.body.innerText')).includes('Draft.'));
+  const project = String(await js('location.pathname'));
+  await go(`${project}/edit`);
+  await js(`document.querySelector('#summary').value = 'Made in a browser'; document.querySelector('#track_id').selectedIndex = 1; document.querySelector('#repo_url').value = 'https://example.org/bea'`);
+  await click('button[value=submit]');
+  check('Submit project submits it', String(await js('document.body.innerText')).includes('Project submitted'));
+
+  await send('Network.clearBrowserCookies');
+  await send('Network.setCookie', { name: 'session', value: 'jdg_a_demo_91bc5e0f27d4a8c3', url: base });
+  const own = (await (await fetch(`${base}/api/judge/scores`, { headers: { cookie: 'session=jdg_a_demo_91bc5e0f27d4a8c3' } })).json()) as { scores: { assignment_id: string }[] };
+  await go(`/judge/reviews/${own.scores[0]?.assignment_id}`);
+  await js(`document.querySelector('input[name=score_functionality][value="3"]').focus()`);
+  await key('ArrowRight', 39);
+  await sleep(100);
+  check('arrow keys move between scores on the review form', (await js(`document.querySelector('input[name=score_functionality]:checked')?.value`)) === '4');
+  await click('button[value=submit]');
+  check('saving a review returns to the judging queue', String(await js('location.pathname')).startsWith('/judge/'));
+
+  check('no JavaScript or console errors on any page', errors.length === 0);
+} finally {
+  for (const [name, ok] of results) console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}`);
+  if (errors.length) console.log(`errors: ${errors.join(' | ')}`);
+  console.log(`\n${results.filter(([, ok]) => ok).length}/${results.length} browser checks passed`);
+  socket.close();
+  chrome.kill();
+  await new Promise((resolve) => chrome.on('exit', resolve));
+  fs.rmSync(profile, { recursive: true, force: true });
+  await server.close();
+}
+process.exitCode = results.every(([, ok]) => ok) ? 0 : 1;
