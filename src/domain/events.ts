@@ -140,3 +140,84 @@ function readEventFields(form: FormReader): EventFields {
   return fields;
 }
 
+function uniqueSlug(store: Store, base: string): string {
+  const root = base || 'event';
+  let slug = root;
+  for (let n = 2; store.get('SELECT 1 FROM events WHERE slug = ?', [slug]); n++) slug = `${root}-${n}`;
+  return slug;
+}
+
+/** Tracks arrive as one name per line, so an event can be set up in a single form. */
+function readTrackNames(form: FormReader): string[] {
+  const names = form
+    .text('tracks', { label: 'Tracks', max: 2000 })
+    .split('\n')
+    .map((name) => name.trim())
+    .filter(Boolean);
+  const unique = [...new Set(names.map((n) => n.toLowerCase()))];
+  if (unique.length !== names.length) form.fail('tracks', 'Each track needs a different name.');
+  if (names.some((n) => n.length > 80)) form.fail('tracks', 'Track names must be 80 characters or fewer.');
+  return names;
+}
+
+export const DEFAULT_CRITERIA = [
+  { key: 'functionality', name: 'Functionality', description: 'Does it work, end to end?' },
+  { key: 'quality', name: 'Quality', description: 'Is it well built, clear and robust?' },
+  { key: 'innovation', name: 'Innovation', description: 'Is the idea or approach new?' },
+];
+
+/** Admins create events. The creator becomes the first organizer. */
+export function createEvent(store: Store, actor: Actor, body: Body): EventRow {
+  const user = requireAdmin(actor);
+  const form = new FormReader(body);
+  const fields = readEventFields(form);
+  const trackNames = readTrackNames(form);
+  form.assertValid();
+
+  return store.tx(() => {
+    const now = iso(actor.now);
+    const event: EventRow = {
+      id: newId('evt'),
+      slug: uniqueSlug(store, slugify(fields.name)),
+      ...fields,
+      results_published_at: null,
+      score_min: 1,
+      score_max: 5,
+      source: 'created',
+      created_by: user.id,
+      created_at: now,
+      updated_at: now,
+    };
+    store.run(
+      `INSERT INTO events (id, slug, name, tagline, description, submissions_open_at, submissions_close_at, judging_close_at,
+         max_team_size, reviews_per_project, score_min, score_max, source, created_by, created_at, updated_at)
+       VALUES ($id, $slug, $name, $tagline, $description, $submissions_open_at, $submissions_close_at, $judging_close_at,
+         $max_team_size, $reviews_per_project, $score_min, $score_max, $source, $created_by, $created_at, $updated_at)`,
+      {
+        id: event.id, slug: event.slug, name: event.name, tagline: event.tagline, description: event.description,
+        submissions_open_at: event.submissions_open_at, submissions_close_at: event.submissions_close_at,
+        judging_close_at: event.judging_close_at, max_team_size: event.max_team_size,
+        reviews_per_project: event.reviews_per_project, score_min: event.score_min, score_max: event.score_max,
+        source: event.source, created_by: event.created_by, created_at: event.created_at, updated_at: event.updated_at,
+      },
+    );
+    grantRole(store, event.id, user.id, 'organizer', user.id, now);
+    trackNames.forEach((name, position) => {
+      store.run('INSERT INTO tracks (id, event_id, name, position) VALUES (?, ?, ?, ?)', [newId('trk'), event.id, name, position]);
+    });
+    DEFAULT_CRITERIA.forEach((c, position) => {
+      store.run('INSERT INTO criteria (id, event_id, key, name, description, weight, position) VALUES (?, ?, ?, ?, ?, 1, ?)', [
+        newId('crt'), event.id, c.key, c.name, c.description, position,
+      ]);
+    });
+    record(store, actor, {
+      eventId: event.id,
+      action: 'event.created',
+      subjectType: 'event',
+      subjectId: event.id,
+      summary: `Created the event ${event.name} with ${trackNames.length} track(s); submissions close ${formatUtc(event.submissions_close_at)}.`,
+    });
+    return event;
+  });
+}
+
