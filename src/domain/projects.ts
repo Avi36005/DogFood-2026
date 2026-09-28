@@ -133,3 +133,86 @@ function assertTeamMember(store: Store, actor: Actor, project: ProjectRow, attem
   });
 }
 
+/**
+ * Saves an edit, and submits if asked. `version` is the version the editor loaded; if a
+ * teammate saved in between, the edit is refused rather than silently overwriting theirs.
+ */
+export function updateProject(store: Store, actor: Actor, projectId: string, body: Body): ProjectRow {
+  return store.tx(() => {
+    const project = getProject(store, projectId);
+    const event = getEvent(store, project.event_id);
+    assertSubmissionsOpen(event, actor.now);
+    const user = assertTeamMember(store, actor, project, 'edit');
+    if (project.status === 'withdrawn' || project.superseded_by) throw conflict('This project was withdrawn or replaced, so it can no longer be edited.');
+
+    const form = new FormReader(body);
+    const expected = form.raw('version');
+    if (expected && Number(expected) !== project.version) {
+      throw conflict('A teammate saved this project while you were editing. Reload to see their changes, then apply yours again.');
+    }
+    const tracks = listTracks(store, event.id);
+    const fields = readFields(form, tracks);
+    const submit = form.raw('intent') === 'submit' || project.status === 'submitted';
+    if (submit) for (const [field, message] of Object.entries(submissionProblems(fields, tracks))) form.fail(field, message);
+    form.assertValid();
+
+    const becameSubmitted = submit && project.status === 'draft';
+    const now = iso(actor.now);
+    const next: ProjectRow = {
+      ...project,
+      ...fields,
+      status: submit ? 'submitted' : project.status,
+      submitted_at: becameSubmitted ? now : project.submitted_at,
+      version: project.version + 1,
+      updated_at: now,
+    };
+    store.run(
+      `UPDATE projects SET title = ?, summary = ?, description = ?, track_id = ?, repo_url = ?, demo_url = ?, video_url = ?,
+         status = ?, submitted_at = ?, version = ?, updated_at = ?
+       WHERE id = ? AND version = ?`,
+      [next.title, next.summary, next.description, next.track_id, next.repo_url, next.demo_url, next.video_url,
+        next.status, next.submitted_at, next.version, now, project.id, project.version],
+    );
+    addRevision(store, actor, next, becameSubmitted ? 'submitted' : 'edited');
+    const changed = EDITABLE.filter((key) => project[key] !== next[key]);
+    record(store, actor, {
+      eventId: event.id,
+      action: becameSubmitted ? 'project.submitted' : 'project.edited',
+      subjectType: 'project',
+      subjectId: project.id,
+      summary: becameSubmitted
+        ? `${user.name} submitted “${next.title}”.`
+        : `${user.name} edited ${changed.length ? changed.join(', ').replaceAll('_', ' ') : 'nothing'} of “${next.title}”.`,
+    });
+    return next;
+  });
+}
+
+export function withdrawProject(store: Store, actor: Actor, projectId: string): void {
+  store.tx(() => {
+    const project = getProject(store, projectId);
+    const event = getEvent(store, project.event_id);
+    assertSubmissionsOpen(event, actor.now);
+    const user = assertTeamMember(store, actor, project, 'withdraw');
+    if (project.status === 'withdrawn') return;
+    const next = { ...project, status: 'withdrawn' as const, version: project.version + 1 };
+    store.run("UPDATE projects SET status = 'withdrawn', version = ?, updated_at = ? WHERE id = ?", [next.version, iso(actor.now), project.id]);
+    addRevision(store, actor, next, 'withdrawn');
+    record(store, actor, { eventId: event.id, action: 'project.withdrawn', subjectType: 'project', subjectId: project.id, summary: `${user.name} withdrew “${project.title}”.` });
+  });
+}
+
+// Viewing ---------------------------------------------------------------------------
+
+export interface ProjectPage {
+  project: ProjectRow;
+  event: EventRow;
+  team: TeamRow;
+  track: TrackRow | null;
+  members: MemberRow[];
+  canEdit: boolean;
+  isOrganizer: boolean;
+  supersededBy: ProjectRow | null;
+  supersedes: ProjectRow[];
+}
+
