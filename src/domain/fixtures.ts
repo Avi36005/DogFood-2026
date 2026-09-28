@@ -189,3 +189,6 @@ export function validateFixture(data: unknown): { fixture: Fixture; warnings: st
   return { fixture, warnings };
 }
 
+const personId = (email: string) => `usr_${createHash('sha256').update(email.toLowerCase()).digest('hex').slice(0, 12)}`;
+const title = (key: string) => key.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+
