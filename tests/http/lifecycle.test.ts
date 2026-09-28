@@ -142,4 +142,70 @@ describe('a full event lifecycle through the web forms', () => {
     await dave.postForm('/signup', { name: 'Dave', email: 'dave@example.com', password: 'dave-password' }, { tokenFrom: '/signup' });
     assert.equal((await dave.postForm(`/events/${slug}/team`, { name: 'Gamma' })).status, 403);
   });
+
+  test('auto-assignment respects tracks and reports what it cannot fill', async () => {
+    const reply = await admin.postForm(`/organize/${slug}/assignments/auto`, {});
+    assert.equal(reply.status, 200);
+    assert.match(reply.text, /Created 3 assignment/);
+    assert.match(reply.text, /Beta Game: 1 of 2, only 1 judge\(s\) cover this track/);
+  });
+
+  test('judges score only their own assignments', async () => {
+    const queue = await jude.get(`/judge/${slug}`);
+    assert.match(queue.text, /Alpha Tool/);
+    assert.doesNotMatch(queue.text, /Beta Game/);
+    const assignment = extract(queue.text, /\/judge\/reviews\/(asg_\w+)/);
+
+    const partial = await jude.postForm(`/judge/reviews/${assignment}`, { intent: 'submit', score_functionality: '4', comment: '' });
+    assert.equal(partial.status, 422);
+    assert.equal((await jude.postForm(`/judge/reviews/${assignment}`, { intent: 'draft', score_functionality: '4' })).status, 303);
+    const done = await jude.postForm(`/judge/reviews/${assignment}`, { intent: 'submit', score_functionality: '4', score_quality: '5', score_innovation: '3', comment: 'Solid.' });
+    assert.equal(done.status, 303);
+    assert.equal((await jude.postForm(`/judge/reviews/${assignment}`, { intent: 'submit', score_functionality: '9', score_quality: '5', score_innovation: '3' })).status, 422, 'out of scale');
+
+    const kimQueue = await kim.get(`/judge/${slug}`);
+    const kimAssignments = [...kimQueue.text.matchAll(/\/judge\/reviews\/(asg_\w+)/g)].map((m) => m[1] as string);
+    assert.equal(new Set(kimAssignments).size, 2);
+    for (const [i, id] of [...new Set(kimAssignments)].entries()) {
+      assert.equal((await kim.postForm(`/judge/reviews/${id}`, { intent: 'submit', score_functionality: String(3 + i), score_quality: '3', score_innovation: '4' })).status, 303);
+    }
+    assert.equal((await jude.get(`/judge/reviews/${kimAssignments[0]}`)).status, 403);
+    assert.equal((await jude.postForm(`/judge/reviews/${kimAssignments[0]}`, { intent: 'submit', score_functionality: '1', score_quality: '1', score_innovation: '1' })).status, 403);
+    const kimId = (await kim.getJson('/api/me')).json<{ user: { id: string } }>().user.id;
+    assert.equal((await jude.get(`/api/judge/scores?judge=${kimId}`)).status, 403);
+    const own = (await jude.get('/api/judge/scores')).json<{ scores: { weighted: number }[] }>();
+    assert.equal(own.scores.length, 1);
+    assert.equal(own.scores[0]?.weighted, (2 * 4 + 5 + 3) / 4, 'uses the organizer weights 2:1:1');
+  });
+
+  test('results stay hidden until published, then are public and frozen', async () => {
+    assert.match((await new Client(server.url).get(`/events/${slug}/results`)).text, /Not published yet/);
+    const preview = await admin.get(`/organize/${slug}/results`);
+    assert.match(preview.text, /Alpha Tool/);
+    assert.equal((await admin.postForm(`/organize/${slug}/results/publish`, {})).status, 303);
+
+    const results = await new Client(server.url).get(`/events/${slug}/results`);
+    assert.match(results.text, /Alpha Tool/);
+    assert.match(results.text, /Beta Game/);
+    const api = (await new Client(server.url).getJson(`/api/events/${slug}/results`)).json<{ published: boolean; snapshot: { method: string; lambda: number } }>();
+    assert.equal(api.published, true);
+    assert.equal(api.snapshot.method, 'additive-offsets-ridge/v1');
+    assert.equal(api.snapshot.lambda, 2);
+
+    const queue = await jude.get(`/judge/${slug}`);
+    const assignment = extract(queue.text, /\/judge\/reviews\/(asg_\w+)/);
+    const afterPublish = await jude.postForm(`/judge/reviews/${assignment}`, { intent: 'submit', score_functionality: '1', score_quality: '1', score_innovation: '1' });
+    assert.equal(afterPublish.status, 403, 'reviews are final once results are published');
+  });
+
+  test('exports and the audit trail tell the whole story', async () => {
+    const csv = await admin.get(`/api/export.csv?event=${slug}&kind=reviews`);
+    assert.equal(csv.status, 200);
+    assert.match(csv.text.split('\r\n')[0] ?? '', /^judge_id,judge,project_id,title,status,functionality,quality,innovation,weighted,comment,submitted_at$/);
+    assert.match(csv.text, /Jude,prj_\w+,Alpha Tool,submitted,4,5,3,4,Solid\./);
+    const audit = await admin.get(`/organize/${slug}/audit`);
+    for (const action of ['event.created', 'rubric.changed', 'team.created', 'team.joined', 'project.submitted', 'judge.invited', 'judge.accepted', 'event.submissions_closed', 'assignment.auto', 'review.submitted', 'results.published', 'access.denied']) {
+      assert.match(audit.text, new RegExp(`<code>${action.replace('.', '\\.')}</code>`), action);
+    }
+  });
 });
