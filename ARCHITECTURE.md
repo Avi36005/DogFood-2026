@@ -39,3 +39,48 @@ on the same routes' domain functions, and needs nothing from the network.
    - An `AccessDenied` is written to the audit trail *after* the transaction has rolled back,
      so a refused attempt is never lost with the work it tried to do.
 
+## Layers
+
+| Directory | Owns | May use |
+|---|---|---|
+| `src/http/` | HTTP: context, router, CSRF, rate limits, static files, the error boundary | domain errors |
+| `src/routes/` | One module per area: public, auth, teams, judge, organize, admin, api | domain, views |
+| `src/domain/` | The rules. Authorization, deadlines, assignment, normalization, results, audit | db, util |
+| `src/views/` | HTML as escaped template literals. No logic beyond presentation | util |
+| `src/db/` | `Store` (prepared statements, transactions), migrations | node:sqlite |
+| `src/util/` | Errors, form reading, CSV, time, tokens. No I/O | node:crypto |
+
+Dependencies point one way: `http → routes → domain → db`. The domain never sees a request, so
+the same function serves the HTML form, the JSON API and the tests.
+
+**Authorization lives in the domain, not the routes.** Every write function starts with the
+check it needs:
+- `requireRole(store, actor, event, ['organizer'], 'publish the results of …')`
+- `assertSubmissionsOpen(event, actor.now)`
+- a team-membership test
+
+A route that forgot a check could not leak: the function it calls refuses the caller. The
+queries themselves are scoped where it matters. A judge's queue is `WHERE a.judge_id = <the
+caller>`, and there is no parameter to ask for someone else's. Two pure modules have no database
+access at all and are tested alone: `domain/normalization.ts` (the model fit) and
+`domain/assignment.ts` (the planner).
+
+## Decisions worth defending
+
+| Decision | Why | Cost we accepted |
+|---|---|---|
+| **Zero runtime dependencies**: `node:http`, `node:sqlite`, `node:crypto` | `docker compose up` cannot break on a registry outage or a yanked package, the image builds with the network off, and there is no supply chain to audit | A router, request context, form reader and template helper written here, about 500 lines together |
+| **SQLite in WAL mode, one file** | No second container, no health-check race, backup is one file. The whole fixture imports in about 50 ms | One writer at a time; no horizontal scaling. Right for a hackathon, wrong for a SaaS |
+| **TypeScript run directly by Node** (type stripping, erasable syntax only) | Types without a build step. `tsc` is a development check, not part of shipping | No enums or parameter properties; `.ts` extensions in imports |
+| **Server-rendered HTML, no client framework** | Pages work without JavaScript. The gallery's fixture titles are in the response body, so curl sees them. Authorization is never duplicated in a client | About 70 lines of progressive-enhancement JS: the menu, copy buttons, the live refresh |
+| **Escaping by default** (`views/html.ts`) | Every interpolated value is escaped unless it is already `SafeHtml`. There is no way to print user text raw by accident | Templates are strings, not components |
+| **Strict CSP**: `script-src 'self'; style-src 'self'`, no inline anything | An injected `<script>` would not run even if escaping failed | No inline styles, so progress bars use native `<progress>` |
+| **The phase is computed, never stored** | "Open", "judging" and "published" are derived from the dates, so the label can never disagree with the rule that enforces it | A few date comparisons per request |
+| **The deadline is checked first, inside the write's transaction** (`BEGIN IMMEDIATE`) | A late request is refused for being late, whatever else is wrong with it, and no write can slip in between the check and the commit | Writers queue on SQLite's lock, which is microseconds here |
+| **403 means "not yours", decided before looking** | Refusals are decided from the caller's roles *before* the target is fetched, so a 403 is not an oracle for which judges or reviews exist | Organizers and judges hit different refusal messages; both are logged |
+| **Fixture ids kept as primary keys** | `prj_07` in the database is `prj_07` in the file, so every exported number traces back to the input | Ids are opaque strings with mixed origins (`prj_07`, `prj_k3v9x2m1qa7d`) |
+| **Raw scores stored, derived values recomputed** | Weights can change without rewriting reviews. Normalized results live only in immutable, published snapshots | Standings are recomputed on each preview (about 10 ms on the fixture) |
+| **One-time links instead of email** | No SMTP server, no hosted mail provider, fully offline | People pass links on by hand; stated in the UI and the README |
+
+## Security in one place
+
