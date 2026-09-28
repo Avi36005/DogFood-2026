@@ -216,3 +216,106 @@ export interface ProjectPage {
   supersedes: ProjectRow[];
 }
 
+/**
+ * Submitted projects are public. Drafts, withdrawn projects and replaced duplicates are
+ * visible only to the team and the organizers; to anyone else they do not exist (404).
+ */
+export function projectPage(store: Store, actor: Actor, projectId: string): ProjectPage {
+  const project = store.get<ProjectRow>('SELECT * FROM projects WHERE id = ?', [projectId]);
+  if (!project) throw notFound('No such project.');
+  const event = getEvent(store, project.event_id);
+  const roles = actor.user ? rolesIn(store, actor.user.id, event.id) : new Set();
+  const member = actor.user ? isMember(store, actor.user.id, project.team_id) : false;
+  const isOrganizer = roles.has('organizer');
+  const isPublic = project.status === 'submitted' && !project.superseded_by;
+  if (!isPublic && !member && !isOrganizer) throw notFound('No such project.');
+
+  const team = store.get<TeamRow>('SELECT * FROM teams WHERE id = ?', [project.team_id]) as TeamRow;
+  const track = project.track_id ? (store.get<TrackRow>('SELECT * FROM tracks WHERE id = ?', [project.track_id]) ?? null) : null;
+  return {
+    project,
+    event,
+    team,
+    track,
+    members: teamMembers(store, team.id),
+    canEdit: member && project.status !== 'withdrawn' && !project.superseded_by && submissionsOpen(event, actor.now),
+    isOrganizer,
+    supersededBy: project.superseded_by ? getProject(store, project.superseded_by) : null,
+    supersedes: store.all<ProjectRow>('SELECT * FROM projects WHERE superseded_by = ? ORDER BY submitted_at', [project.id]),
+  };
+}
+
+export interface RevisionRow {
+  version: number;
+  action: string;
+  snapshot: string;
+  at: string;
+  actor_name: string | null;
+}
+
+export function projectRevisions(store: Store, projectId: string): RevisionRow[] {
+  return store.all<RevisionRow>(
+    `SELECT r.version, r.action, r.snapshot, r.at, u.name AS actor_name FROM project_revisions r
+     LEFT JOIN users u ON u.id = r.actor_id WHERE r.project_id = ? ORDER BY r.version DESC`,
+    [projectId],
+  );
+}
+
+// Gallery ---------------------------------------------------------------------------
+
+export interface GalleryQuery {
+  q?: string;
+  event?: string;
+  track?: string;
+  sort?: 'newest' | 'oldest' | 'title';
+  page?: number;
+}
+
+export interface GalleryItem extends ProjectRow {
+  team_name: string;
+  track_name: string | null;
+  event_name: string;
+  event_slug: string;
+  rank: number | null;
+}
+
+export const GALLERY_PAGE_SIZE = 60;
+
+/** The public gallery: submitted, current projects only. Filters are plain query parameters so a view can be shared by URL. */
+export function gallery(store: Store, query: GalleryQuery): { items: GalleryItem[]; total: number; page: number; pages: number } {
+  const clauses = ["p.status = 'submitted'", 'p.superseded_by IS NULL'];
+  const params: Record<string, string | number> = {};
+  if (query.event) {
+    clauses.push('(e.slug = $event OR e.id = $event)');
+    params.event = query.event;
+  }
+  if (query.track) {
+    clauses.push('p.track_id = $track');
+    params.track = query.track;
+  }
+  const q = query.q?.trim();
+  if (q) {
+    clauses.push("(p.title LIKE $q ESCAPE '\\' OR p.summary LIKE $q ESCAPE '\\' OR t.name LIKE $q ESCAPE '\\')");
+    params.q = `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+  }
+  const where = clauses.join(' AND ');
+  const from = `FROM projects p JOIN teams t ON t.id = p.team_id JOIN events e ON e.id = p.event_id
+    LEFT JOIN tracks tr ON tr.id = p.track_id
+    LEFT JOIN result_snapshots s ON s.event_id = e.id AND s.superseded_at IS NULL AND e.results_published_at IS NOT NULL
+    LEFT JOIN result_rows rr ON rr.snapshot_id = s.id AND rr.project_id = p.id`;
+  const order = {
+    newest: 'p.submitted_at DESC, p.title',
+    oldest: 'p.submitted_at ASC, p.title',
+    title: 'p.title COLLATE NOCASE, p.submitted_at',
+  }[query.sort ?? 'oldest'];
+  const total = store.get<{ n: number }>(`SELECT count(*) AS n ${from} WHERE ${where}`, params)?.n ?? 0;
+  const pages = Math.max(1, Math.ceil(total / GALLERY_PAGE_SIZE));
+  const page = Math.min(Math.max(1, query.page ?? 1), pages);
+  const items = store.all<GalleryItem>(
+    `SELECT p.*, t.name AS team_name, tr.name AS track_name, e.name AS event_name, e.slug AS event_slug, rr.rank AS rank
+     ${from} WHERE ${where} ORDER BY ${order} LIMIT $limit OFFSET $offset`,
+    { ...params, limit: GALLERY_PAGE_SIZE, offset: (page - 1) * GALLERY_PAGE_SIZE },
+  );
+  return { items, total, page, pages };
+}
+
