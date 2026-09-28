@@ -72,3 +72,64 @@ export function eventForSubmission(store: Store, user: UserRow, hint: string | n
   throw badRequest('Say which event this project is for, with ?event=<event id or slug>.');
 }
 
+export function createProject(store: Store, actor: Actor, event: EventRow, body: Body): ProjectRow {
+  const user = requireUser(actor);
+  const tracks = listTracks(store, event.id);
+  return store.tx(() => {
+    // The deadline is checked first, so a late request is refused for being late, whatever else is wrong with it.
+    assertSubmissionsOpen(event, actor.now);
+    const team = myTeam(store, user.id, event.id);
+    if (!team) throw forbidden(`Create or join a team for ${event.name} before starting a project.`);
+    const existing = liveProjectOfTeam(store, team.id);
+    if (existing) throw conflict(`${team.name} already has a project, “${existing.title}”. Edit that one instead.`);
+
+    const form = new FormReader(body);
+    const fields = readFields(form, tracks);
+    const submit = form.raw('intent') === 'submit';
+    if (submit) for (const [field, message] of Object.entries(submissionProblems(fields, tracks))) form.fail(field, message);
+    form.assertValid();
+
+    const now = iso(actor.now);
+    const project: ProjectRow = {
+      id: newId('prj'),
+      event_id: event.id,
+      team_id: team.id,
+      ...fields,
+      status: submit ? 'submitted' : 'draft',
+      submitted_at: submit ? now : null,
+      superseded_by: null,
+      version: 1,
+      created_at: now,
+      updated_at: now,
+    };
+    store.run(
+      `INSERT INTO projects (id, event_id, team_id, track_id, title, summary, description, repo_url, demo_url, video_url,
+         status, submitted_at, version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+      [project.id, event.id, team.id, fields.track_id, fields.title, fields.summary, fields.description, fields.repo_url,
+        fields.demo_url, fields.video_url, project.status, project.submitted_at, now, now],
+    );
+    addRevision(store, actor, project, submit ? 'submitted' : 'created');
+    record(store, actor, {
+      eventId: event.id,
+      action: submit ? 'project.submitted' : 'project.created',
+      subjectType: 'project',
+      subjectId: project.id,
+      summary: `${user.name} ${submit ? 'submitted' : 'started a draft of'} “${project.title}” for ${team.name}.`,
+    });
+    return project;
+  });
+}
+
+function assertTeamMember(store: Store, actor: Actor, project: ProjectRow, attempted: string): UserRow {
+  const user = requireUser(actor);
+  if (isMember(store, user.id, project.team_id)) return user;
+  throw new AccessDenied('Only members of the team can change this project.', {
+    eventId: project.event_id,
+    action: 'access.denied',
+    subjectType: 'project',
+    subjectId: project.id,
+    summary: `${actorLabel(actor)} was refused: ${attempted} “${project.title}”.`,
+  });
+}
+
