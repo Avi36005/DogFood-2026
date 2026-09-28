@@ -221,3 +221,56 @@ export function createEvent(store: Store, actor: Actor, body: Body): EventRow {
   });
 }
 
+export function updateEvent(store: Store, actor: Actor, event: EventRow, body: Body): EventRow {
+  requireOrganizer(store, actor, event, `edit the settings of ${event.name}`);
+  const form = new FormReader(body);
+  const fields = readEventFields(form);
+  form.assertValid();
+
+  return store.tx(() => {
+    const changed = (Object.keys(fields) as (keyof EventFields)[]).filter((key) => fields[key] !== event[key]);
+    if (changed.length === 0) return event;
+    store.run(
+      `UPDATE events SET name = $name, tagline = $tagline, description = $description,
+         submissions_open_at = $submissions_open_at, submissions_close_at = $submissions_close_at,
+         judging_close_at = $judging_close_at, max_team_size = $max_team_size,
+         reviews_per_project = $reviews_per_project, updated_at = $updated_at
+       WHERE id = $id`,
+      { ...fields, updated_at: iso(actor.now), id: event.id },
+    );
+    record(store, actor, {
+      eventId: event.id,
+      action: 'event.updated',
+      subjectType: 'event',
+      subjectId: event.id,
+      summary: `Changed ${changed.join(', ').replaceAll('_', ' ')} of ${fields.name}.`,
+      detail: Object.fromEntries(changed.map((key) => [key, { from: event[key], to: fields[key] }])),
+    });
+    return { ...event, ...fields };
+  });
+}
+
+/** Moves the deadline to now: the organizer's "stop the clock" button. */
+export function closeSubmissionsNow(store: Store, actor: Actor, event: EventRow): void {
+  requireOrganizer(store, actor, event, `close submissions for ${event.name}`);
+  const now = iso(actor.now);
+  if (now >= event.submissions_close_at) throw conflict('Submissions are already closed.');
+  store.tx(() => {
+    store.run(
+      `UPDATE events SET submissions_close_at = $now,
+         submissions_open_at = CASE WHEN submissions_open_at >= $now THEN NULL ELSE submissions_open_at END,
+         updated_at = $now WHERE id = $id`,
+      { now, id: event.id },
+    );
+    record(store, actor, {
+      eventId: event.id,
+      action: 'event.submissions_closed',
+      subjectType: 'event',
+      subjectId: event.id,
+      summary: `Closed submissions early; the deadline was ${formatUtc(event.submissions_close_at)}.`,
+    });
+  });
+}
+
+// Tracks and prizes ------------------------------------------------------------------
+
