@@ -51,4 +51,55 @@ describe('web security', () => {
     await client.postForm('/logout', {});
     assert.equal((await new Client(server.url, token).get('/api/me')).status, 401, 'the old token is dead');
   });
+
+  test('sign-in does not redirect off-site', async () => {
+    const client = new Client(server.url);
+    const token = await client.csrfToken('/login');
+    const reply = await client.request('POST', '/login?next=//evil.example/x', {
+      body: new URLSearchParams({ _csrf: token, email: 'priya1@example.org', password: 'forgeboard-demo' }).toString(),
+      type: 'application/x-www-form-urlencoded',
+    });
+    assert.equal(reply.status, 303);
+    assert.equal(reply.headers.get('location'), '/dashboard');
+  });
+
+  test('password guessing is rate limited', async () => {
+    const client = new Client(server.url);
+    const statuses: number[] = [];
+    for (let i = 0; i < 12; i++) statuses.push((await client.signIn('organizer@forgeboard.local', `wrong-${i}`)).status);
+    assert.deepEqual(statuses.slice(0, 10), Array(10).fill(401));
+    assert.equal(statuses.at(-1), 429);
+  });
+
+  test('an imported account without a password cannot be claimed by signing up', async () => {
+    const reply = await new Client(server.url).postForm('/signup', { name: 'Not Tomas', email: 'tomas.varga@example.org', password: 'takeover123' }, { tokenFrom: '/signup' });
+    assert.equal(reply.status, 422);
+    assert.match(reply.text, /added by an organizer/);
+  });
+
+  test('user text is escaped wherever it is shown', async () => {
+    const admin = new Client(server.url);
+    await admin.signIn('admin@forgeboard.local');
+    const future = new Date(Date.now() + 3600_000).toISOString().slice(0, 16);
+    await admin.postForm('/events/new', { name: 'XSS <img src=x onerror=alert(1)>', submissions_close_at: future, tracks: '' });
+    const page = await new Client(server.url).get('/events');
+    assert.ok(page.text.includes('XSS &lt;img src=x onerror=alert(1)&gt;'));
+    assert.ok(!page.text.includes('<img src=x'));
+  });
+
+  test('demo sessions exist only in demo mode', async () => {
+    const production = await startServer({ demo: false });
+    try {
+      assert.equal((await new Client(production.url, DEMO_SESSIONS.organizer).get('/api/me')).status, 401);
+      assert.ok(production.booted.setupLink, 'a first-admin setup link is issued instead');
+      const setup = new URL(production.booted.setupLink ?? '');
+      const client = new Client(production.url);
+      assert.match((await client.get(setup.pathname)).text, /Set up your account/);
+      assert.equal((await client.postForm(setup.pathname, { password: 'admin-password' }, { tokenFrom: setup.pathname })).status, 303);
+      assert.equal((await client.get('/admin')).status, 200);
+      assert.equal((await new Client(production.url).get(setup.pathname)).status, 410, 'the link works once');
+    } finally {
+      await production.close();
+    }
+  });
 });
