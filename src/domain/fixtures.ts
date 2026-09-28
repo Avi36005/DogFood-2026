@@ -192,3 +192,134 @@ export function validateFixture(data: unknown): { fixture: Fixture; warnings: st
 const personId = (email: string) => `usr_${createHash('sha256').update(email.toLowerCase()).digest('hex').slice(0, 12)}`;
 const title = (key: string) => key.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 
+export function importFixtures(store: Store, actor: Actor, data: unknown): ImportReport {
+  const { fixture, warnings } = validateFixture(data);
+  const { event } = fixture;
+  const counts: Record<string, number> = {};
+  const report: ImportReport = { eventId: event.id, skipped: false, counts, duplicates: [], warnings };
+  if (store.get('SELECT 1 FROM events WHERE id = ?', [event.id])) return { ...report, skipped: true };
+
+  const now = iso(actor.now);
+  const close = parseInstant(event.submissions_close).toISOString();
+  store.tx(() => {
+    let slug = slugify(event.name) || event.id.toLowerCase();
+    for (let n = 2; store.get('SELECT 1 FROM events WHERE slug = ?', [slug]); n++) slug = `${slugify(event.name)}-${n}`;
+    store.run(
+      `INSERT INTO events (id, slug, name, tagline, description, submissions_close_at, reviews_per_project, source, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 3, 'fixture', ?, ?)`,
+      [event.id, slug, event.name, 'Imported from the DOGFOOD fixtures.', 'Every project, judge and score on this event was loaded from fixtures.json at first boot.', close, now, now],
+    );
+
+    fixture.tracks.forEach((t, position) => {
+      store.run('INSERT INTO tracks (id, event_id, name, position) VALUES (?, ?, ?, ?)', [t.id, event.id, t.name, position]);
+    });
+    counts.tracks = fixture.tracks.length;
+
+    // The rubric is whatever criteria the scores use, equally weighted; the file gives no weights.
+    const criterionKeys = [...new Set(fixture.scores.flatMap((s) => Object.keys(s.criteria)))];
+    const criterionIds = new Map<string, string>();
+    criterionKeys.forEach((key, position) => {
+      const id = `crt_${event.id}_${key}`;
+      criterionIds.set(key, id);
+      const known = DEFAULT_CRITERIA.find((c) => c.key === key);
+      store.run('INSERT INTO criteria (id, event_id, key, name, description, weight, position) VALUES (?, ?, ?, ?, ?, 1, ?)', [
+        id, event.id, key, known?.name ?? title(key), known?.description ?? '', position,
+      ]);
+    });
+    counts.criteria = criterionKeys.length;
+
+    const userIdByEmail = new Map<string, string>();
+    const upsertUser = (id: string, email: string, name: string) => {
+      const existing = store.get<{ id: string }>('SELECT id FROM users WHERE email = ?', [email.toLowerCase()]);
+      if (existing) return existing.id;
+      store.run('INSERT INTO users (id, email, name, created_at) VALUES (?, ?, ?, ?)', [id, email.toLowerCase(), name, now]);
+      return id;
+    };
+
+    for (const judge of fixture.judges) {
+      const userId = upsertUser(judge.id, judge.email, judge.name);
+      userIdByEmail.set(judge.email.toLowerCase(), userId);
+      grantRole(store, event.id, userId, 'judge', null, now);
+      for (const trackId of judge.tracks) {
+        store.run('INSERT INTO judge_tracks (event_id, judge_id, track_id) VALUES (?, ?, ?)', [event.id, userId, trackId]);
+      }
+    }
+    counts.judges = fixture.judges.length;
+
+    let members = 0;
+    for (const team of fixture.teams) {
+      store.run('INSERT INTO teams (id, event_id, name, created_at) VALUES (?, ?, ?, ?)', [team.id, event.id, team.name, now]);
+      team.members.forEach((email, index) => {
+        const userId = upsertUser(personId(email), email, email.split('@')[0] ?? email);
+        store.run('INSERT INTO team_members (team_id, event_id, user_id, is_captain, joined_at) VALUES (?, ?, ?, ?, ?)', [team.id, event.id, userId, index === 0 ? 1 : 0, now]);
+        grantRole(store, event.id, userId, 'participant', null, now);
+        members++;
+      });
+    }
+    counts.teams = fixture.teams.length;
+    counts.people = members;
+
+    // Duplicate policy: one live project per team. The latest submission counts; earlier ones are
+    // kept, marked as replaced by it, and listed for the organizer, who can reverse the choice.
+    const byTeam = new Map<string, FixtureProject[]>();
+    for (const p of fixture.projects) byTeam.set(p.team, [...(byTeam.get(p.team) ?? []), p]);
+    const supersededBy = new Map<string, string>();
+    for (const [teamId, list] of byTeam) {
+      if (list.length < 2) continue;
+      const ordered = [...list].sort((a, b) => a.submitted_at.localeCompare(b.submitted_at) || a.id.localeCompare(b.id));
+      const kept = ordered.at(-1) as FixtureProject;
+      const replaced = ordered.slice(0, -1);
+      for (const p of replaced) supersededBy.set(p.id, kept.id);
+      report.duplicates.push({ team: teamId, kept: kept.id, replaced: replaced.map((p) => p.id) });
+    }
+
+    for (const p of fixture.projects) {
+      const submittedAt = parseInstant(p.submitted_at).toISOString();
+      store.run(
+        `INSERT INTO projects (id, event_id, team_id, track_id, title, summary, repo_url, status, submitted_at, superseded_by, version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'submitted', ?, ?, 1, ?, ?)`,
+        [p.id, event.id, p.team, p.track, p.title, p.summary ?? '', p.repo_url ?? '', submittedAt, supersededBy.get(p.id) ?? null, submittedAt, submittedAt],
+      );
+      store.run(
+        "INSERT INTO project_revisions (project_id, version, action, snapshot, actor_id, at) VALUES (?, 1, 'imported', ?, NULL, ?)",
+        [p.id, JSON.stringify({ status: 'submitted', title: p.title, summary: p.summary ?? '', track_id: p.track, repo_url: p.repo_url ?? '' }), now],
+      );
+    }
+    counts.projects = fixture.projects.length;
+
+    // Each score becomes an assignment plus a submitted review. The file has no review times,
+    // so reviews are stamped with the import time.
+    fixture.scores.forEach((s, index) => {
+      const judgeId = userIdByEmail.get(fixture.judges.find((j) => j.id === s.judge)?.email.toLowerCase() ?? '') ?? s.judge;
+      const assignmentId = `asg_${event.id}_${String(index + 1).padStart(4, '0')}`;
+      store.run(
+        "INSERT INTO assignments (id, event_id, project_id, judge_id, source, created_at) VALUES (?, ?, ?, ?, 'fixture', ?)",
+        [assignmentId, event.id, s.project, judgeId, now],
+      );
+      store.run("INSERT INTO reviews (assignment_id, status, comment, submitted_at, updated_at) VALUES (?, 'submitted', ?, ?, ?)", [assignmentId, s.comment ?? '', now, now]);
+      for (const [key, value] of Object.entries(s.criteria)) {
+        store.run('INSERT INTO review_scores (assignment_id, criterion_id, value) VALUES (?, ?, ?)', [assignmentId, criterionIds.get(key) as string, value]);
+      }
+    });
+    counts.scores = fixture.scores.length;
+
+    record(store, actor, {
+      eventId: event.id,
+      action: 'fixtures.imported',
+      subjectType: 'event',
+      subjectId: event.id,
+      summary: `Imported ${event.name} from fixtures.json: ${counts.projects} projects, ${counts.teams} teams, ${counts.judges} judges, ${counts.scores} scores.`,
+      detail: { counts, warnings },
+    });
+    for (const dup of report.duplicates) {
+      record(store, actor, {
+        eventId: event.id,
+        action: 'project.duplicate_detected',
+        subjectType: 'project',
+        subjectId: dup.kept,
+        summary: `Team ${dup.team} submitted more than once. ${dup.kept} (the latest) counts; ${dup.replaced.join(', ')} kept on record as replaced. An organizer can reverse this.`,
+      });
+    }
+  });
+  return report;
+}
