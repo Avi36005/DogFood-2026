@@ -79,4 +79,94 @@ export const publicRoutes: RouteModule = (router, { store }) => {
     const member = view.members.some((m) => m.id === ctx.user?.id);
     ctx.html(projectDetailPage(ctx, view, member || view.isOrganizer ? projectRevisions(store, view.project.id) : null));
   });
+
+  router.get('/projects/:id/edit', (ctx) => {
+    const view = projectPage(store, ctx.actor, ctx.params.id as string);
+    if (!ctx.user) throw unauthorized();
+    if (!view.members.some((m) => m.id === ctx.user?.id)) throw forbidden('Only members of the team can edit this project.');
+    if (!view.canEdit) throw forbidden(submissionsOpen(view.event, ctx.now) ? 'This project can no longer be edited.' : `Submissions for ${view.event.name} are closed.`);
+    const p = view.project;
+    ctx.html(projectFormPage(ctx, {
+      event: view.event,
+      team: view.team,
+      tracks: listTracks(store, view.event.id),
+      values: { title: p.title, summary: p.summary, description: p.description, track_id: p.track_id ?? '', repo_url: p.repo_url, demo_url: p.demo_url, video_url: p.video_url },
+      projectId: p.id,
+      status: p.status,
+      version: p.version,
+    }));
+  });
+
+  router.post('/projects/:id/edit', async (ctx) => {
+    const body = await ctx.body();
+    try {
+      const wasDraft = getProject(store, ctx.params.id as string).status === 'draft';
+      const project = updateProject(store, ctx.actor, ctx.params.id as string, body);
+      if (ctx.wantsJson) return ctx.json({ project });
+      ctx.flash('success', project.status !== 'submitted'
+        ? 'Draft saved.'
+        : wasDraft
+          ? 'Project submitted. You can keep editing until the deadline.'
+          : 'Saved. Your submission is up to date.');
+      ctx.redirect(`/projects/${project.id}`);
+    } catch (error) {
+      if (!(error instanceof ValidationError) || ctx.wantsJson) throw error;
+      const project = getProject(store, ctx.params.id as string);
+      const event = getEvent(store, project.event_id);
+      const team = myTeam(store, ctx.user?.id ?? '', event.id);
+      if (!team) throw error;
+      ctx.html(projectFormPage(ctx, { event, team, tracks: listTracks(store, event.id), values: body as Record<string, string>, errors: error.fields, projectId: project.id, status: project.status, version: project.version }), 422);
+    }
+  });
+
+  router.post('/projects/:id/withdraw', (ctx) => {
+    withdrawProject(store, ctx.actor, ctx.params.id as string);
+    const project = getProject(store, ctx.params.id as string);
+    ctx.flash('info', `“${project.title}” was withdrawn.`);
+    ctx.redirect(`/events/${getEvent(store, project.event_id).slug}/team`);
+  });
+
+  // Events.
+  router.get('/events', (ctx) => {
+    const events = listEvents(store).map((e) => ({ ...e, ...eventCounts(store, e.id) }));
+    ctx.html(eventsPage(ctx, events, Boolean(ctx.user?.is_admin)));
+  });
+
+  router.get('/events/new', (ctx) => {
+    if (!ctx.user) throw unauthorized();
+    if (!ctx.user.is_admin) throw forbidden('Only an administrator can create events.');
+    ctx.html(eventFormPage(ctx, { values: { max_team_size: '4', reviews_per_project: '3' } }));
+  });
+
+  router.post('/events/new', async (ctx) => {
+    const body = await ctx.body();
+    try {
+      const event = createEvent(store, ctx.actor, body);
+      if (ctx.wantsJson) return ctx.json({ event }, 201);
+      ctx.flash('success', `${event.name} is live. Add prizes, check the rubric, then invite judges.`);
+      ctx.redirect(`/organize/${event.slug}`);
+    } catch (error) {
+      if (!(error instanceof ValidationError) || ctx.wantsJson) throw error;
+      ctx.html(eventFormPage(ctx, { values: body as Record<string, string>, errors: error.fields }), 422);
+    }
+  });
+
+  router.get('/events/:slug', (ctx) => {
+    const event = getEvent(store, ctx.params.slug as string);
+    ctx.html(eventPage(ctx, {
+      event,
+      tracks: listTracks(store, event.id),
+      prizes: listPrizes(store, event.id),
+      counts: eventCounts(store, event.id),
+      roles: ctx.user ? rolesIn(store, ctx.user.id, event.id) : new Set(),
+      team: ctx.user ? (myTeam(store, ctx.user.id, event.id) ?? null) : null,
+      published: Boolean(event.results_published_at),
+    }));
+  });
+
+  router.get('/events/:slug/results', (ctx) => {
+    const event: EventRow = getEvent(store, ctx.params.slug as string);
+    const isOrganizer = ctx.user ? rolesIn(store, ctx.user.id, event.id).has('organizer') : false;
+    ctx.html(resultsPage(ctx, event, publishedResults(store, event), isOrganizer));
+  });
 };
