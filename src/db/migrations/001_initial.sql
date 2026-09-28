@@ -80,3 +80,90 @@ CREATE TABLE event_roles (
 );
 CREATE INDEX event_roles_by_user ON event_roles (user_id);
 
+CREATE TABLE tracks (
+  id          TEXT PRIMARY KEY,
+  event_id    TEXT NOT NULL REFERENCES events (id) ON DELETE CASCADE,
+  name        TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 80),
+  description TEXT NOT NULL DEFAULT '' CHECK (length(description) <= 1000),
+  position    INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (event_id, name),
+  UNIQUE (id, event_id)
+);
+
+CREATE TABLE prizes (
+  id          TEXT PRIMARY KEY,
+  event_id    TEXT NOT NULL REFERENCES events (id) ON DELETE CASCADE,
+  track_id    TEXT,                   -- NULL: an event-wide prize
+  name        TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 120),
+  description TEXT NOT NULL DEFAULT '' CHECK (length(description) <= 1000),
+  position    INTEGER NOT NULL DEFAULT 0,
+  FOREIGN KEY (track_id, event_id) REFERENCES tracks (id, event_id)
+);
+
+-- Teams ----------------------------------------------------------------------
+
+-- Team names are not unique: the fixtures hold three pairs of different teams that share a
+-- name. New teams created in the portal are asked to pick an unused name (teams.ts).
+CREATE TABLE teams (
+  id         TEXT PRIMARY KEY,
+  event_id   TEXT NOT NULL REFERENCES events (id) ON DELETE CASCADE,
+  name       TEXT NOT NULL COLLATE NOCASE CHECK (length(name) BETWEEN 1 AND 80),
+  created_by TEXT REFERENCES users (id),
+  created_at TEXT NOT NULL,
+  UNIQUE (id, event_id)
+);
+CREATE INDEX teams_by_event ON teams (event_id, name);
+
+CREATE TABLE team_members (
+  team_id    TEXT NOT NULL,
+  event_id   TEXT NOT NULL,
+  user_id    TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  is_captain INTEGER NOT NULL DEFAULT 0 CHECK (is_captain IN (0, 1)),
+  joined_at  TEXT NOT NULL,
+  PRIMARY KEY (team_id, user_id),
+  UNIQUE (event_id, user_id),         -- one team per person per event
+  FOREIGN KEY (team_id, event_id) REFERENCES teams (id, event_id) ON DELETE CASCADE
+);
+
+-- Invite links are multi-use until they expire, are replaced, or the team is full.
+CREATE TABLE team_invites (
+  token_hash TEXT PRIMARY KEY,
+  team_id    TEXT NOT NULL REFERENCES teams (id) ON DELETE CASCADE,
+  created_by TEXT REFERENCES users (id),
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+CREATE INDEX team_invites_by_team ON team_invites (team_id);
+
+-- Projects -------------------------------------------------------------------
+
+CREATE TABLE projects (
+  id            TEXT PRIMARY KEY,
+  event_id      TEXT NOT NULL,
+  team_id       TEXT NOT NULL,
+  track_id      TEXT,
+  title         TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 120),
+  summary       TEXT NOT NULL DEFAULT '' CHECK (length(summary) <= 280),
+  description   TEXT NOT NULL DEFAULT '' CHECK (length(description) <= 10000),
+  repo_url      TEXT NOT NULL DEFAULT '' CHECK (length(repo_url) <= 500),
+  demo_url      TEXT NOT NULL DEFAULT '' CHECK (length(demo_url) <= 500),
+  video_url     TEXT NOT NULL DEFAULT '' CHECK (length(video_url) <= 500),
+  status        TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'submitted', 'withdrawn')),
+  submitted_at  TEXT,
+  -- A later submission from the same team replaces this one. Both rows are kept.
+  superseded_by TEXT REFERENCES projects (id) DEFERRABLE INITIALLY DEFERRED,
+  version       INTEGER NOT NULL DEFAULT 1,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  UNIQUE (id, event_id),
+  FOREIGN KEY (team_id, event_id) REFERENCES teams (id, event_id),
+  FOREIGN KEY (track_id, event_id) REFERENCES tracks (id, event_id),
+  CHECK (status <> 'submitted' OR submitted_at IS NOT NULL),
+  CHECK (superseded_by IS NULL OR superseded_by <> id)
+);
+-- One live project per team: the rule that turns the fixture's duplicate into an explicit decision.
+CREATE UNIQUE INDEX projects_one_live_per_team ON projects (team_id)
+  WHERE superseded_by IS NULL AND status <> 'withdrawn';
+CREATE INDEX projects_by_event ON projects (event_id, status);
+
