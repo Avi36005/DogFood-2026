@@ -236,3 +236,95 @@ export interface EventPageView {
   published: boolean;
 }
 
+export function eventPage(ctx: Ctx, view: EventPageView): SafeHtml {
+  const { event, roles } = view;
+  const phase = phaseOf(event, ctx.now);
+  const cta: SafeHtml[] = [];
+  if (roles.has('organizer')) cta.push(linkButton(`/organize/${event.slug}`, 'Organizer console', 'primary'));
+  if (roles.has('judge')) cta.push(linkButton(`/judge/${event.slug}`, 'Your judging queue', 'primary'));
+  if (view.team) cta.push(linkButton(`/events/${event.slug}/team`, `Your team: ${view.team.name}`, roles.has('organizer') || roles.has('judge') ? 'secondary' : 'primary'));
+  else if (phase.key === 'open' && !roles.has('judge') && !roles.has('organizer')) cta.push(linkButton(ctx.user ? `/events/${event.slug}/team` : `/signup?next=/events/${event.slug}/team`, 'Join or start a team', 'primary'));
+  if (view.published) cta.push(linkButton(`/events/${event.slug}/results`, 'Results', 'secondary'));
+  cta.push(linkButton(`/projects?event=${event.slug}`, 'Projects', 'secondary'));
+
+  return page(ctx, {
+    title: event.name,
+    nav: 'events',
+    body: html`
+${pageHeader(event.name, { eyebrow: phasePill(phase), lead: event.tagline, actions: cta })}
+<div class="stat-row">
+  ${stat('Submissions close', html`<time datetime="${event.submissions_close_at}">${formatUtc(event.submissions_close_at)}</time>`, when(event.submissions_close_at, ctx.now, { relative: true }))}
+  ${stat('Submitted', String(view.counts.submitted), `${view.counts.teams} teams`)}
+  ${stat('Judges', String(view.counts.judges), `${event.reviews_per_project} reviews per project`)}
+  ${stat('Team size', `up to ${event.max_team_size}`)}
+</div>
+<div class="two-col">
+  <div>
+    ${event.description ? section('About', html`<div class="prose">${event.description}</div>`) : ''}
+    ${section('Tracks', view.tracks.length ? html`<ul class="track-list">${view.tracks.map((t) => html`<li><a href="/projects?event=${event.slug}&amp;track=${t.id}">${t.name}</a>${t.description ? html` <span class="muted">${t.description}</span>` : ''}</li>`)}</ul>` : html`<p class="muted">This event has no tracks.</p>`)}
+    ${section('Prizes', view.prizes.length ? html`<ul class="prize-list">${view.prizes.map((p) => html`<li><strong>${p.name}</strong>${p.track_name ? html` <span class="pill pill-neutral">${p.track_name}</span>` : html` <span class="pill pill-neutral">Overall</span>`}${p.description ? html`<br><span class="muted">${p.description}</span>` : ''}</li>`)}</ul>` : html`<p class="muted">No prizes are listed.</p>`)}
+  </div>
+  <aside>
+    ${section('Timeline', html`<ol class="timeline">
+      <li><strong>Submissions open</strong><br>${event.submissions_open_at ? when(event.submissions_open_at, ctx.now) : html`<span class="muted">from creation</span>`}</li>
+      <li><strong>Deadline</strong><br>${when(event.submissions_close_at, ctx.now)}</li>
+      <li><strong>Judging closes</strong><br>${event.judging_close_at ? when(event.judging_close_at, ctx.now) : html`<span class="muted">when results are published</span>`}</li>
+      <li><strong>Results</strong><br>${event.results_published_at ? when(event.results_published_at, ctx.now) : html`<span class="muted">not published yet</span>`}</li>
+    </ol>`)}
+  </aside>
+</div>`,
+  });
+}
+
+export function resultsPage(ctx: Ctx, event: EventRow, published: { snapshot: Snapshot; rows: PublishedRow[] } | null, isOrganizer: boolean): SafeHtml {
+  return page(ctx, {
+    title: `Results · ${event.name}`,
+    nav: 'events',
+    body: html`
+${pageHeader('Results', { eyebrow: html`<a href="/events/${event.slug}">${event.name}</a>`, lead: published ? html`Published ${when(published.snapshot.published_at, ctx.now)} from ${published.snapshot.review_count} reviews.` : 'Results are hidden until the organizers publish them.' })}
+${!published
+  ? html`${empty('Not published yet', 'Rankings stay private while judging is under way, so no one can read an early lead into the scores.')}${isOrganizer ? html`<p>${linkButton(`/organize/${event.slug}/results`, 'Preview and publish', 'primary')}</p>` : ''}`
+  : html`
+<div class="table-wrap"><table class="data">
+  <caption class="sr-only">Final ranking</caption>
+  <thead><tr><th scope="col">Rank</th><th scope="col">Project</th><th scope="col">Team</th><th scope="col">Track</th><th scope="col" class="n">Score</th><th scope="col" class="n">Raw mean</th><th scope="col" class="n">Reviews</th></tr></thead>
+  <tbody>${published.rows.map((r) => html`<tr${r.rank <= 3 ? html` class="podium"` : ''}>
+    <td class="rank">${r.rank}</td><td><a href="/projects/${r.project_id}">${r.title}</a>${r.low_coverage ? html` ${pill('few reviews', 'warn')}` : ''}</td><td>${r.team_name}</td><td>${r.track_name ?? ''}</td>
+    <td class="n">${num(r.score, 3)}</td><td class="n">${num(r.raw_mean, 3)}</td><td class="n">${r.review_count}</td></tr>`)}</tbody>
+</table></div>
+${section('How these scores were computed', html`<p><strong>Score</strong> is the project’s average after removing each judge’s fitted offset (method <code>${published.snapshot.method}</code>, shrinkage λ = ${published.snapshot.lambda}). <strong>Raw mean</strong> is the plain average of its reviews. Both are on the event’s ${event.score_min}–${event.score_max} scale, from the weighted rubric. <a href="/about#normalization">Full method</a>.</p>`)}`}`,
+  });
+}
+
+// About ------------------------------------------------------------------------------
+
+export function aboutPage(ctx: Ctx): SafeHtml {
+  return page(ctx, {
+    title: 'About and methods',
+    body: html`
+${pageHeader('How Forgeboard works', { eyebrow: 'About and methods', lead: 'What each role can see, how the ranking is computed, and what this instance is.' })}
+<div class="prose-page">
+<h2 id="roles">Roles</h2>
+<p>Roles belong to an event, not to an account: the same person can judge one hackathon and compete in another. <strong>Visitors</strong> browse the gallery and published results. <strong>Participants</strong> form a team with an invite link and submit one project per team. <strong>Judges</strong> see only the projects assigned to them and only their own scores. <strong>Organizers</strong> configure the event, the rubric and the judges, watch progress, and publish. <strong>Administrators</strong> create events and manage accounts. A judge cannot be on a team in the same event, and an organizer cannot judge it.</p>
+<h2 id="isolation">Isolation</h2>
+<p>Every rule above is enforced on the server. Pages and the JSON API go through the same checks, so hiding a button is never the only thing standing in the way. A refused attempt returns 403 and is written to the event’s audit trail with who tried what.</p>
+<h2 id="normalization">How the ranking is computed</h2>
+<p>Each review becomes one number: the weighted average of its criterion scores, using the organizer’s weights. Judges differ in how generously they score, so a project’s raw average depends on who happened to review it. Forgeboard fits one model to all reviews at once:</p>
+<p class="formula">x<sub>jp</sub> = μ + a<sub>p</sub> + b<sub>j</sub> + ε</p>
+<p>μ is the overall mean, a<sub>p</sub> the project’s effect and b<sub>j</sub> the judge’s offset. The offsets are shrunk toward zero with λ = 2: a judge counts as if they had filed two extra reviews with no bias, so a judge seen once or twice is not declared harsh on thin evidence. Projects are ranked by μ + a<sub>p</sub>. The raw mean is always shown beside it.</p>
+<p>This method was chosen by simulation on the fixture’s real judge–project layout, where it recovered the true ranking better than raw means and better than per-judge z-scores (which need more reviews per judge than a hackathon produces). The full derivation, the evidence and the limits are in <code>JUDGING.md</code> in the repository.</p>
+<h2 id="edge-cases">Awkward cases</h2>
+<ul>
+<li><strong>A judge who gives everyone the same score</strong> is flagged “no variation” for the organizer. Their reviews still count, and their generosity or harshness is absorbed by their offset.</li>
+<li><strong>Unfinished batches</strong> show up as uneven coverage. Nothing assumes every judge reviewed every project; a project with fewer than two reviews is ranked but flagged.</li>
+<li><strong>A duplicate submission</strong> from one team: the latest counts, the earlier one is kept on record as replaced, and the organizer can reverse the choice. Nothing is merged or deleted silently.</li>
+</ul>
+<h2 id="demo">Demo mode</h2>
+${ctx.config.demo
+  ? html`<p>This instance runs in <strong>demo mode</strong>. It was seeded from the DOGFOOD <code>fixtures.json</code> and has five demo accounts whose password is published in the README, plus four fixed session tokens used by the acceptance checker. That makes it easy to evaluate and unsafe for real data: an operator turns demo mode off by leaving <code>FORGEBOARD_DEMO</code> unset.</p>`
+  : html`<p>Demo mode is off on this instance.</p>`}
+<h2 id="self-hosting">Self-hosting</h2>
+<p>One container, one SQLite file, no network access needed. <code>docker compose up</code> starts it; every table is documented in <code>DATA-MODEL.md</code>, and every judging stage exports to CSV so leaving is as easy as arriving.</p>
+</div>`,
+  });
+}
