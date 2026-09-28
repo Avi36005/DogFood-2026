@@ -95,3 +95,47 @@ All three are checked with `json_valid`.
 | The audit log and revision history are append-only | Triggers | *the audit log is append-only* |
 | A failed operation leaves nothing behind | One transaction per domain operation | *a transaction that fails leaves nothing behind* |
 
+## The way in
+
+- **The DOGFOOD fixtures format** (`src/domain/fixtures.ts`), at first start
+  (`FORGEBOARD_SEED_FIXTURES=1`) or with `node src/cli.ts import <file>`.
+  1. **The whole file is validated first:** the shape, then every cross-reference (unknown team,
+     track or judge), a judge who is also on a team, a judge scoring a project twice, scores
+     outside 1–5, and inconsistent criteria sets. Every problem is listed.
+  2. **Then it is written in one transaction.** A bad file changes nothing.
+  3. **Importing the same event again is a no-op.**
+
+  The mapping:
+  - Judges become users with their fixture ids, plus the judge role and their tracks.
+  - Team members become users without passwords, who can claim their accounts with a link.
+  - Each score becomes an assignment plus a submitted review.
+  - The criteria become an equally weighted rubric on a 1–5 scale.
+  - A team with more than one project keeps the latest live and marks the rest replaced
+    (JUDGING.md §4).
+- **Accounts** can be created by sign-up, by invitation (judges), or by import.
+
+## The way out
+
+- **CSV at every stage** (organizers; the **Export** tab or `GET /api/export.csv?event=<id>&kind=<kind>`):
+
+  | Kind | Contents |
+  |---|---|
+  | `results` | The ranking with raw means, normalized scores and raw ranks |
+  | `reviews` | Every review with each criterion, the weighted score and the comment |
+  | `projects` | Every project, including drafts and replaced ones |
+  | `judges` | Tracks, progress, fitted offset and flags |
+  | `assignments` | Who reviews what, and how each assignment was made |
+  | `audit` | The event's full audit trail |
+
+  Files are RFC 4180, UTF-8, with CRLF line endings. Formula-like cells are neutralized.
+- **The whole database:** `node src/cli.ts backup <file>` writes a consistent copy while the
+  server runs. It is a plain SQLite file, readable by any SQLite tool, and every table is
+  described above.
+- **JSON:** `GET /api/events`, `/api/events/<id>`, `/api/projects` and the published results.
+  See `GET /api`.
+
+## Migrations
+
+Migrations are forward-only SQL files in `src/db/migrations/`. Each runs in its own
+transaction on start and is recorded in `schema_migrations`. Adding a feature means adding
+`002_….sql`; the shipped schema is never edited in place.
