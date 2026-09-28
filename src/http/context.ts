@@ -117,4 +117,123 @@ export class Ctx {
   get isJsonBody(): boolean {
     return (this.req.headers['content-type'] ?? '').split(';')[0]?.trim() === 'application/json';
   }
+
+  // CSRF ------------------------------------------------------------------------
+
+  /** The per-browser token that every form carries as _csrf. */
+  get csrfToken(): string {
+    return hmac(this.#secret, this.#csrfCookie);
+  }
+
+  /**
+   * Unsafe requests must come from our own pages. Three layers: the session cookie is
+   * SameSite=Lax; a browser's Origin header must be ours; and a form body must carry the
+   * token. A JSON body needs no token, because a cross-site page cannot send one without a
+   * CORS preflight, which this server never approves.
+   */
+  async verifyCsrf(): Promise<void> {
+    const origin = this.req.headers.origin;
+    if (origin && origin !== 'null') {
+      const host = this.req.headers.host;
+      const allowed = new Set([new URL(this.config.publicUrl).origin, `http://${host}`, `https://${host}`]);
+      if (!allowed.has(origin)) throw new HttpError(403, 'This request came from another site and was refused.');
+    }
+    if (this.isJsonBody) return;
+    const body = await this.body();
+    const token = typeof body._csrf === 'string' ? body._csrf : '';
+    if (!safeEqual(token, this.csrfToken)) throw new HttpError(403, 'This form has expired. Reload the page and try again.');
+  }
+
+  // Bodies ----------------------------------------------------------------------
+
+  body(): Promise<Body> {
+    this.#body ??= this.#readBody();
+    return this.#body;
+  }
+
+  async #readBody(): Promise<Body> {
+    if (this.method === 'GET' || this.method === 'HEAD') return {};
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of this.req) {
+      size += (chunk as Buffer).length;
+      if (size > MAX_BODY_BYTES) throw new HttpError(413, 'The request body is too large.');
+      chunks.push(chunk as Buffer);
+    }
+    const text = Buffer.concat(chunks).toString('utf8');
+    const type = (this.req.headers['content-type'] ?? '').split(';')[0]?.trim() ?? '';
+    if (text === '') return {};
+    if (type === 'application/json') {
+      try {
+        const parsed: unknown = JSON.parse(text);
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('not an object');
+        return parsed as Body;
+      } catch {
+        throw new HttpError(400, 'The body is not a JSON object.');
+      }
+    }
+    if (type === 'application/x-www-form-urlencoded' || type === '') {
+      const body: Record<string, string | string[]> = {};
+      for (const [key, value] of new URLSearchParams(text)) {
+        const existing = body[key];
+        if (existing === undefined) body[key] = value;
+        else body[key] = Array.isArray(existing) ? [...existing, value] : [existing, value];
+      }
+      return body;
+    }
+    throw new HttpError(415, 'Send application/x-www-form-urlencoded or application/json.');
+  }
+
+  // Flash messages ------------------------------------------------------------------
+
+  flash(kind: Flash['kind'], text: string): void {
+    this.setCookie(FLASH_COOKIE, JSON.stringify({ kind, text }), { maxAge: 60 });
+  }
+
+  takeFlash(): Flash | null {
+    const raw = this.#cookies.get(FLASH_COOKIE);
+    if (!raw) return null;
+    this.clearCookie(FLASH_COOKIE);
+    try {
+      const value = JSON.parse(raw) as Flash;
+      if (['success', 'error', 'info'].includes(value.kind) && typeof value.text === 'string') return { kind: value.kind, text: value.text.slice(0, 500) };
+    } catch {
+      // ignore a tampered or truncated flash
+    }
+    return null;
+  }
+
+  // Responses -----------------------------------------------------------------------
+
+  send(status: number, contentType: string, body: string | Buffer, headers: Record<string, string> = {}): void {
+    if (this.res.headersSent) return;
+    this.res.statusCode = status;
+    this.res.setHeader('Content-Type', contentType);
+    if (!this.res.hasHeader('Cache-Control')) this.res.setHeader('Cache-Control', 'no-store');
+    for (const [name, value] of Object.entries(headers)) this.res.setHeader(name, value);
+    if (this.#setCookies.length) this.res.setHeader('Set-Cookie', this.#setCookies);
+    this.res.end(body);
+  }
+
+  html(page: SafeHtml, status = 200): void {
+    this.send(status, 'text/html; charset=utf-8', page.value);
+  }
+
+  json(data: unknown, status = 200): void {
+    this.send(status, 'application/json; charset=utf-8', `${JSON.stringify(data, null, 2)}\n`);
+  }
+
+  csv(filename: string, body: string): void {
+    this.send(200, 'text/csv; charset=utf-8', body, { 'Content-Disposition': `attachment; filename="${filename.replace(/[^\w.-]/g, '_')}"` });
+  }
+
+  redirect(location: string, status = 303): void {
+    this.send(status, 'text/plain; charset=utf-8', `Redirecting to ${location}`, { Location: location });
+  }
+
+  /** Only same-site paths, so ?next= cannot be turned into an open redirect. */
+  safeNext(fallback = '/dashboard'): string {
+    const next = this.query('next');
+    return next && next.startsWith('/') && !next.startsWith('//') && !next.startsWith('/\\') ? next : fallback;
+  }
 }
