@@ -67,3 +67,97 @@ export interface GalleryView {
   query: { q: string; event: string; track: string; sort: string };
 }
 
+export function galleryPage(ctx: Ctx, view: GalleryView): SafeHtml {
+  const { query } = view;
+  const filtered = Boolean(query.q || query.event || query.track);
+  const params = (pageNumber: number) => {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) if (value) search.set(key, value);
+    if (pageNumber > 1) search.set('page', String(pageNumber));
+    return `/projects${search.size ? `?${search}` : ''}`;
+  };
+  return page(ctx, {
+    title: 'Projects',
+    nav: 'projects',
+    wide: true,
+    body: html`
+${pageHeader('Projects', { eyebrow: 'Public gallery', lead: `${view.total} submitted project${view.total === 1 ? '' : 's'}${filtered ? ' match these filters' : ` across ${view.events.length} event${view.events.length === 1 ? '' : 's'}`}. Drafts stay private until their team submits.` })}
+<form class="filters" method="get" action="/projects" role="search">
+  ${input({ name: 'q', label: 'Search', type: 'search', value: query.q, placeholder: 'Title, summary or team' })}
+  ${select({ name: 'event', label: 'Event', value: query.event, blank: 'All events', options: view.events.map((e) => ({ value: e.slug, label: e.name })) })}
+  ${select({ name: 'track', label: 'Track', value: query.track, blank: 'All tracks', options: view.tracks.map((t) => ({ value: t.id, label: view.events.length > 1 ? `${t.name} (${t.event_name})` : t.name })) })}
+  ${select({ name: 'sort', label: 'Order', value: query.sort, options: [{ value: 'oldest', label: 'First submitted' }, { value: 'newest', label: 'Latest submitted' }, { value: 'title', label: 'Title A–Z' }] })}
+  <div class="filter-actions">${button('Apply')} ${filtered ? html`<a class="btn btn-ghost" href="/projects">Clear</a>` : ''}</div>
+</form>
+${view.items.length === 0
+  ? empty('No projects found', filtered ? 'Nothing matches these filters. Try a shorter search or another track.' : 'No project has been submitted yet.')
+  : html`<ul class="card-grid" aria-label="Projects">${view.items.map((p) => projectCard(p))}</ul>`}
+${view.pages > 1
+  ? html`<nav class="pager" aria-label="Pages">${view.page > 1 ? html`<a href="${params(view.page - 1)}" rel="prev">Previous</a>` : html`<span></span>`}<span>Page ${view.page} of ${view.pages}</span>${view.page < view.pages ? html`<a href="${params(view.page + 1)}" rel="next">Next</a>` : html`<span></span>`}</nav>`
+  : ''}`,
+  });
+}
+
+function projectCard(p: GalleryItem): SafeHtml {
+  return html`<li class="card project-card">
+    <div class="card-top">
+      ${p.track_name ? pill(p.track_name, 'neutral') : ''}
+      ${p.rank !== null ? pill(`Rank ${p.rank}`, 'dark') : ''}
+    </div>
+    <h2 class="card-title"><a href="/projects/${p.id}">${p.title}</a></h2>
+    <p class="card-summary">${p.summary || html`<span class="muted">No summary.</span>`}</p>
+    <p class="card-meta"><span>${p.team_name}</span><span aria-hidden="true">·</span><span>${p.event_name}</span></p>
+    <p class="card-meta muted">Submitted ${p.submitted_at ? formatDate(p.submitted_at) : ''}</p>
+  </li>`;
+}
+
+// Project page -------------------------------------------------------------------
+
+export function projectDetailPage(ctx: Ctx, view: ProjectPage, revisions: RevisionRow[] | null): SafeHtml {
+  const { project, event, team, track, members } = view;
+  const links = [
+    ['Repository', project.repo_url],
+    ['Demo', project.demo_url],
+    ['Video', project.video_url],
+  ].filter(([, url]) => url);
+  const status = project.superseded_by
+    ? notice('warn', html`This submission was replaced by a later one from the same team, <a href="/projects/${project.superseded_by}">${view.supersededBy?.title}</a> (${project.superseded_by}). It is kept on record but is not judged or shown in the gallery.`, 'Replaced.')
+    : project.status === 'draft'
+      ? notice('info', html`Only your team and the organizers can see this. Submit it before ${formatUtc(event.submissions_close_at)} to enter.`, 'Draft.')
+      : project.status === 'withdrawn'
+        ? notice('warn', 'The team withdrew this project. It is not public and will not be judged.', 'Withdrawn.')
+        : '';
+  return page(ctx, {
+    title: project.title,
+    nav: 'projects',
+    body: html`
+${pageHeader(project.title, {
+  eyebrow: html`<a href="/events/${event.slug}">${event.name}</a>${track ? html` · ${track.name}` : ''}`,
+  lead: project.summary,
+  actions: html`${view.canEdit ? linkButton(`/projects/${project.id}/edit`, project.status === 'draft' ? 'Edit draft' : 'Edit project', 'primary') : ''}${view.isOrganizer ? linkButton(`/organize/${event.slug}/projects`, 'Organizer view') : ''}`,
+})}
+${status}
+${view.supersedes.length ? notice('info', html`This is the submission that counts for ${team.name}. It replaced ${view.supersedes.map((s) => s.id).join(', ')}, which stays on record.`) : ''}
+<div class="two-col">
+  <div>
+    ${section('About the project', project.description ? html`<div class="prose">${project.description}</div>` : html`<p class="muted">The team has not written a description.</p>`)}
+    ${links.length ? section('Links', html`<ul class="link-list">${links.map(([label, url]) => html`<li><span>${label}</span> <a href="${url}" rel="nofollow noopener ugc">${url}</a></li>`)}</ul>`) : ''}
+  </div>
+  <aside>
+    ${section('Team', html`<p class="team-name">${team.name}</p><ul class="plain-list">${members.map((m) => html`<li>${m.name}${m.is_captain ? html` <span class="muted">(captain)</span>` : ''}</li>`)}</ul>`)}
+    ${section('Record', html`<dl class="facts">
+      <div><dt>Status</dt><dd>${project.superseded_by ? 'Replaced' : project.status === 'submitted' ? 'Submitted' : project.status === 'draft' ? 'Draft' : 'Withdrawn'}</dd></div>
+      <div><dt>Submitted</dt><dd>${when(project.submitted_at, ctx.now)}</dd></div>
+      <div><dt>Last change</dt><dd>${when(project.updated_at, ctx.now)}</dd></div>
+      <div><dt>Deadline</dt><dd>${when(event.submissions_close_at, ctx.now)}</dd></div>
+      <div><dt>Id</dt><dd><code>${project.id}</code></dd></div>
+    </dl>`)}
+    ${view.canEdit && project.status !== 'withdrawn' ? confirmForm(ctx, `/projects/${project.id}/withdraw`, 'Withdraw project', 'The project leaves the gallery and will not be judged. You can start a new one before the deadline.', 'Yes, withdraw', 'danger') : ''}
+  </aside>
+</div>
+${revisions ? section('Revision history', html`<ol class="timeline">${revisions.map((r) => html`<li><span class="pill pill-neutral">v${r.version}</span> ${r.action} by ${r.actor_name ?? 'import'} · ${when(r.at, ctx.now)}</li>`)}</ol>`, { lead: 'Every save is kept. This is what settles “what did we have at the deadline?”' }) : ''}`,
+  });
+}
+
+// Project form ---------------------------------------------------------------------
+
