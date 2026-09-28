@@ -71,4 +71,70 @@ export class FormReader {
       return value;
     }
   }
+
+  int(name: string, rule: { label: string; min: number; max: number; fallback?: number }): number {
+    const text = this.raw(name).trim();
+    if (text === '' && rule.fallback !== undefined) return rule.fallback;
+    const value = Number(text);
+    if (!Number.isInteger(value) || value < rule.min || value > rule.max) {
+      this.fail(name, `${rule.label} must be a whole number from ${rule.min} to ${rule.max}.`);
+      return rule.fallback ?? rule.min;
+    }
+    return value;
+  }
+
+  number(name: string, rule: { label: string; min: number; max: number }): number {
+    const value = Number(this.raw(name).trim());
+    if (!Number.isFinite(value) || value < rule.min || value > rule.max) {
+      this.fail(name, `${rule.label} must be a number from ${rule.min} to ${rule.max}.`);
+      return rule.min;
+    }
+    return value;
+  }
+
+  /** A UTC instant from <input type="datetime-local">, or an ISO string sent over the API. */
+  instant(name: string, rule: { label: string; required?: boolean }): string | null {
+    const text = this.raw(name).trim();
+    if (text === '') {
+      if (rule.required) this.fail(name, `${rule.label} is required.`);
+      return null;
+    }
+    const value = fromDatetimeLocal(text) ?? (/^\d{4}-\d{2}-\d{2}T/.test(text) && !Number.isNaN(Date.parse(text)) ? new Date(text).toISOString() : null);
+    if (!value) this.fail(name, `${rule.label} must be a date and time.`);
+    return value;
+  }
+
+  choice<T extends string>(name: string, options: readonly T[], label: string, required = true): T | null {
+    const value = this.raw(name);
+    if (value === '' && !required) return null;
+    if (!options.includes(value as T)) {
+      this.fail(name, `Choose a ${label.toLowerCase()}.`);
+      return null;
+    }
+    return value as T;
+  }
+
+  checked(name: string): boolean {
+    const value = this.raw(name);
+    return value === 'on' || value === 'true' || value === '1';
+  }
+
+  get valid(): boolean {
+    return Object.keys(this.errors).length === 0;
+  }
+
+  assertValid(): void {
+    if (!this.valid) throw new ValidationError(this.errors);
+  }
+}
+
+/** Lower-case, hyphenated, ASCII: "Sample Hack 2026" becomes "sample-hack-2026". */
+export function slugify(value: string): string {
+  return value
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
 }
