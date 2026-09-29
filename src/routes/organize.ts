@@ -236,6 +236,7 @@ export const organizeRoutes: RouteModule = (router, { store, config }) => {
   // Webhooks (T4).
   router.get('/organize/:slug/webhooks', (ctx) => {
     const event = organizerEvent(ctx, 'see the webhooks');
+    if (ctx.wantsJson) return ctx.json({ webhooks: listWebhooks(store, ctx.actor, event), deliveries: listDeliveries(store, ctx.actor, event) });
     ctx.html(webhooksPage(ctx, event, listWebhooks(store, ctx.actor, event), listDeliveries(store, ctx.actor, event)));
   });
 

@@ -215,6 +215,13 @@ export function openApiDocument(): Json {
       '/events/{slug}/certificates/{id}': {
         get: { tags: ['events'], operationId: 'getCertificatePage', summary: 'The printable certificate page, with its signature status', security: [], parameters: [path('slug', 'Event slug'), path('id', 'Project id')], responses: { 200: { description: 'HTML', content: { 'text/html': { schema: { type: 'string' } } } }, ...errors(404) } },
       },
+      '/organize/{slug}/webhooks': {
+        get: {
+          tags: ['organize'], operationId: 'listWebhooks', summary: "The event's webhooks (with their signing secrets) and the last 50 deliveries, with every attempt's status (send Accept: application/json)",
+          parameters: [path('slug', 'Event slug')],
+          responses: { 200: json({ type: 'object', properties: { webhooks: { type: 'array', items: { type: 'object' } }, deliveries: { type: 'array', items: { type: 'object' } } } }, 'Webhooks and deliveries'), ...errors(401, 403, 404) },
+        },
+      },
       '/judge/{slug}/record.json': {
         get: {
           tags: ['judging'], operationId: 'getMyJudgeRecord', summary: 'Your signed judge record: every review you submitted and, once results are published, the rows of the signed inputs under your pseudonym, so you can check each review was counted at your value',

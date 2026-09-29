@@ -1,6 +1,6 @@
 # Every push re-proves the claims in the README: types, our tests, the organizers' own checker
-# against a fresh `docker compose up` (byte for byte against the committed report), and the
-# network-off rule.
+# against a fresh `docker compose up` (byte for byte against the committed report), our T3 and
+# T4 evidence checks in the same format, and the network-off rule.
 name: ci
 
 on:
@@ -43,6 +43,11 @@ jobs:
           python3 scripts/t3_check.py .dogfood.toml > t3.txt
           cat t3.txt
           diff -u acceptance-report-t3.txt t3.txt
+      - name: our T4 checks (REST API, bulk import, webhooks, certificates, judge records, widget), compared with the committed report
+        run: |
+          python3 scripts/t4_check.py .dogfood.toml > t4.txt
+          cat t4.txt
+          diff -u acceptance-report-t4.txt t4.txt
       - name: signed results verify offline after publishing
         run: |
           # A JSON body needs no form token (a cross-site page cannot send one without a preflight).

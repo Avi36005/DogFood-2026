@@ -1,0 +1,18 @@
+Forgeboard T4 evidence report (scripts/t4_check.py; run.py has no T4 checks)
+portal: http://localhost:8080
+event: sample-hack-2026
+
+T4  REST API: OpenAPI 3.1 for every action ........ PASS
+T4  REST API: a UI action answers JSON ............ PASS
+T4  bulk import: judges from CSV .................. PASS
+T4  bulk import: one bad line imports nothing ..... PASS
+T4  webhooks: added, with a signing secret ........ PASS
+T4  webhooks: a signed test ping is delivered ..... PASS
+T4  webhooks: results.published fires ............. PASS
+T4  certificates: signed and verifiable ........... PASS
+T4  judge records: every review counted ........... PASS
+T4  judge records: a peer is refused .............. PASS
+T4  widget: embeddable gallery .................... PASS
+T4  widget: only the widget may be framed ......... PASS
+
+12 of 12 T4 checks pass
