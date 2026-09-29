@@ -319,3 +319,83 @@ ${formErrors(view.errors)}
 
 // Projects and duplicates ---------------------------------------------------------------
 
+export function projectsAdminPage(ctx: Ctx, event: EventRow, projects: AssignmentsView['projects'], duplicates: TeamSubmissions[]): SafeHtml {
+  const statusPill = (p: ProjectRow) => (p.superseded_by ? pill('replaced', 'neutral') : p.status === 'submitted' ? pill('submitted', 'success') : p.status === 'draft' ? pill('draft', 'warn') : pill('withdrawn', 'neutral'));
+  return organizerPage(ctx, event, 'projects', 'Projects', html`
+${duplicates.length ? section('Duplicate submissions', html`${duplicates.map((d) => html`<div class="dup-group"><p><strong>${d.team.name}</strong> <code class="muted">${d.team.id}</code> submitted ${d.projects.length} times. One live project per team: the one marked “counts” is judged and ranked; the others stay on record with their reviews.</p>
+  <ul class="row-list">${d.projects.map((p) => html`<li><span><a href="/projects/${p.id}">${p.title}</a> <code class="muted">${p.id}</code> submitted ${when(p.submitted_at, ctx.now, { relative: false })} ${p.superseded_by ? pill('replaced', 'neutral') : pill('counts', 'success')}</span>
+    ${p.superseded_by && p.status === 'submitted' ? confirmForm(ctx, `/organize/${event.slug}/projects/${p.id}/count`, 'Make this one count', `${p.id} becomes the team’s judged submission and the others are marked replaced. Reviews stay attached to the project they were written for. The change is audited.`, 'Yes, switch', 'secondary') : ''}</li>`)}</ul></div>`)}`, { id: 'duplicates', lead: 'Found at import or when a team resubmits. Nothing is merged or deleted.' }) : ''}
+${section(`All projects (${projects.length})`, html`<div class="table-wrap"><table class="data compact">
+  <thead><tr><th scope="col">Project</th><th scope="col">Team</th><th scope="col">Track</th><th scope="col">Status</th><th scope="col" class="n">Reviews</th><th scope="col">Submitted</th></tr></thead>
+  <tbody>${projects.map((p) => html`<tr><td><a href="/projects/${p.id}">${p.title}</a> <code class="muted">${p.id}</code></td><td>${p.team_name}</td><td>${p.track_name ?? ''}</td><td>${statusPill(p)}</td><td class="n">${p.reviews}/${p.assigned}</td><td>${p.submitted_at ? when(p.submitted_at, ctx.now, { relative: false }) : html`<span class="muted">–</span>`}</td></tr>`)}</tbody>
+</table></div>`, { lead: 'Drafts, withdrawn and replaced projects included. The public gallery shows only submitted, current ones.' })}`);
+}
+
+// Results ------------------------------------------------------------------------------------
+
+export function resultsAdminPage(ctx: Ctx, event: EventRow, standings: Standings, snapshots: Snapshot[]): SafeHtml {
+  const phase = phaseOf(event, ctx.now);
+  const ranked = standings.standings.filter((s) => s.rank !== null);
+  const moves = (s: Standings['standings'][number]) => {
+    if (s.rank === null || s.raw_rank === null || s.rank === s.raw_rank) return html`<span class="muted">–</span>`;
+    const delta = s.raw_rank - s.rank;
+    return html`<span class="${cx('move', delta > 0 ? 'up' : 'down')}">${delta > 0 ? '▲' : '▼'} ${Math.abs(delta)}<span class="sr-only"> places ${delta > 0 ? 'up' : 'down'} from the raw ranking</span></span>`;
+  };
+  return organizerPage(ctx, event, 'results', 'Results', html`
+${event.results_published_at ? notice('success', html`Published ${when(event.results_published_at, ctx.now)}. <a href="/events/${event.slug}/results">View the public page</a>.`, 'Live.') : notice('info', 'This is a private preview, recomputed on every load. Nobody else sees a ranking until you publish.', 'Preview.')}
+<div class="stat-row">
+  ${stat('Ranked projects', String(ranked.length), `${standings.standings.length - ranked.length} without reviews`)}
+  ${stat('Reviews used', String(standings.reviewCount), 'submitted reviews of current projects')}
+  ${stat('Overall mean', standings.mu.toFixed(3), html`μ, on the ${event.score_min}–${event.score_max} scale`)}
+  ${stat('Fit', `${standings.iterations} iterations`, standings.converged ? 'converged' : 'did not converge')}
+</div>
+<div class="publish-bar">
+  ${phase.key === 'open' || phase.key === 'upcoming'
+    ? notice('info', 'Close submissions before publishing.')
+    : event.results_published_at
+      ? html`${confirmForm(ctx, `/organize/${event.slug}/results/publish`, 'Publish again with current data', 'Creates a new snapshot from the reviews as they are now. The previous snapshot is kept and marked superseded.', 'Yes, republish')} ${confirmForm(ctx, `/organize/${event.slug}/results/unpublish`, 'Withdraw results', 'The public results page goes back to “not published”. Snapshots are kept.', 'Yes, withdraw', 'danger')}`
+      : confirmForm(ctx, `/organize/${event.slug}/results/publish`, 'Publish results', html`Freezes this ranking with its method (${standings.method}, λ = ${standings.lambda}) and weights, closes judging, and shows the results publicly. You can republish later; every snapshot is kept.`, 'Yes, publish')}
+  ${linkButton(`/api/export.csv?event=${event.slug}&kind=results`, 'Download CSV')}
+</div>
+${section('Ranking preview', html`<div class="table-wrap"><table class="data compact">
+  <thead><tr><th scope="col">Rank</th><th scope="col">Project</th><th scope="col">Track</th><th scope="col" class="n">Normalized</th><th scope="col" class="n">Raw mean</th><th scope="col">vs raw</th><th scope="col" class="n">Reviews</th></tr></thead>
+  <tbody>${standings.standings.map((s) => html`<tr>
+    <td class="rank">${s.rank ?? '–'}</td><td><a href="/projects/${s.project_id}">${s.title}</a>${s.low_coverage ? html` ${pill(s.review_count === 0 ? 'no reviews' : 'few reviews', 'warn')}` : ''}</td><td>${s.track_name ?? ''}</td>
+    <td class="n">${num(s.score, 3)}</td><td class="n">${num(s.raw_mean, 3)}</td><td>${moves(s)}</td><td class="n">${s.review_count}</td></tr>`)}</tbody>
+</table></div>`, { lead: html`Rubric weights: ${standings.weights.map((w) => `${w.name} ${Math.round(w.share * 100)}%`).join(', ')}. Normalized = μ + a<sub>p</sub>, the average with each judge’s offset removed.` })}
+${section('Judge offsets', html`<div class="table-wrap"><table class="data compact">
+  <thead><tr><th scope="col">Judge</th><th scope="col" class="n">Reviews</th><th scope="col" class="n">Mean given</th><th scope="col" class="n">Offset b<sub>j</sub></th><th scope="col">Flags</th></tr></thead>
+  <tbody>${standings.judges.map((j) => html`<tr><td>${j.name} <code class="muted">${j.judge_id}</code></td><td class="n">${j.review_count}</td><td class="n">${num(j.mean_given, 2)}</td><td class="n">${signed(j.offset, 3)}</td><td>${flagPills(j.flags)}</td></tr>`)}</tbody>
+</table></div>`, { lead: html`Negative means harsher than the panel, positive more generous. Offsets are shrunk toward zero (λ = ${standings.lambda}), so judges with few reviews stay close to 0. See <a href="/about#normalization">the method</a>.` })}
+${snapshots.length ? section('Published snapshots', html`<ul class="row-list">${snapshots.map((s) => html`<li><span><code>${s.id}</code> ${when(s.published_at, ctx.now)} by ${s.published_by_name ?? 'unknown'} · ${s.review_count} reviews · ${s.method}, λ ${s.lambda}</span>${s.superseded_at ? pill('superseded', 'neutral') : pill('current', 'success')}</li>`)}</ul>`) : ''}`, { lead: 'Normalized ranking, raw means beside it, and the judge offsets that separate them.' });
+}
+
+// Audit ---------------------------------------------------------------------------------------
+
+export function auditList(ctx: Ctx, rows: AuditRow[]): SafeHtml {
+  return html`<ol class="audit-list">${rows.map((r) => html`<li class="${cx(r.action === 'access.denied' && 'denied')}">
+    <div class="audit-meta">${when(r.at, ctx.now)} · <code>${r.action}</code></div>
+    <div>${r.summary}</div>
+    <div class="audit-meta">${r.actor_label}${r.ip ? html` · ${r.ip}` : ''}</div>
+  </li>`)}</ol>`;
+}
+
+export function auditPage(ctx: Ctx, event: EventRow, rows: AuditRow[], actions: string[], filter: string | null, nextBefore: number | null): SafeHtml {
+  return organizerPage(ctx, event, 'audit', 'Audit trail', html`
+<form method="get" class="filters compact" action="/organize/${event.slug}/audit">
+  ${select({ name: 'action', label: 'Show', value: filter, blank: 'Everything', options: [{ value: 'access.denied', label: 'Refused access attempts' }, ...actions.filter((a) => a !== 'access.denied').map((a) => ({ value: a, label: a }))] })}
+  <div class="filter-actions">${button('Filter', { variant: 'secondary' })} ${linkButton(`/api/export.csv?event=${event.slug}&kind=audit`, 'Download CSV', 'ghost')}</div>
+</form>
+${rows.length ? auditList(ctx, rows) : empty('Nothing here', 'No entries match this filter.')}
+${nextBefore ? html`<p>${linkButton(`/organize/${event.slug}/audit?${new URLSearchParams({ ...(filter ? { action: filter } : {}), before: String(nextBefore) })}`, 'Older entries')}</p>` : ''}`,
+  { lead: 'Every change and every refused attempt, newest first. Append-only: the database rejects edits and deletions of this log.' });
+}
+
+// Export --------------------------------------------------------------------------------------
+
+export function exportPage(ctx: Ctx, event: EventRow): SafeHtml {
+  return organizerPage(ctx, event, 'export', 'Export', html`
+<ul class="export-list">${EXPORT_KINDS.map((kind) => html`<li class="card"><h2 class="card-title">${kind}.csv</h2><p>${EXPORT_DESCRIPTIONS[kind]}</p>${linkButton(`/api/export.csv?event=${event.slug}&kind=${kind}`, 'Download', 'secondary', true)}</li>`)}</ul>
+<p class="hint">RFC 4180 CSV, UTF-8. Cells that a spreadsheet would run as a formula are prefixed with an apostrophe. The same files are available to scripts at <code>/api/export.csv?event=${event.slug}&amp;kind=…</code> with an organizer’s session.</p>`,
+  { lead: 'Take your data with you at any stage, before or after publishing.' });
+}
