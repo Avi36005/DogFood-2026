@@ -135,13 +135,18 @@ describe('required 4: .dogfood.toml at the root, with honest tier claims', () =>
     assert.match(toml.routes?.peer_scores as string, /judge=jdg_24$/, "jdg_24 is judge_a's account");
   });
 
-  test('the claim is exactly what the committed report verified: no inflated tier', () => {
+  test('every claimed tier has a passing receipt: run.py for T1 and T2, our checkers for T3 and T4', () => {
     const verified = /claimed (.+), verified (.+)$/m.exec(report);
     assert.ok(verified);
-    assert.deepEqual(toml.tiers?.claimed, ['T1', 'T2']);
-    assert.equal(verified[1], (toml.tiers?.claimed as string[]).join(' '));
-    assert.equal(verified[2], verified[1]);
-    assert.doesNotMatch(report, /claimed but not verified/);
+    assert.deepEqual(toml.tiers?.claimed, ['T1', 'T2', 'T3', 'T4']);
+    assert.equal(verified[1], 'T1 T2 T3 T4');
+    assert.equal(verified[2], 'T1 T2', 'everything run.py can check');
+    assert.match(report, /^note: claimed but not verified: T3 T4$/m, 'only the tiers run.py has no checks for');
+    const t3 = read('acceptance-report-t3.txt');
+    const t4 = read('acceptance-report-t4.txt');
+    assert.match(t3, /^15 of 15 T3 checks pass$/m);
+    assert.match(t4, /^12 of 12 T4 checks pass$/m);
+    assert.doesNotMatch(t3 + t4, /FAIL/);
   });
 });
 

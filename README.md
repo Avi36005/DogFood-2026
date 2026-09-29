@@ -8,7 +8,7 @@ DOGFOOD fixture data.
 
 | | |
 |---|---|
-| **Tiers** | Claims **T1 and T2**. The official checker says `claimed T1 T2, verified T1 T2` ([`acceptance-report.txt`](acceptance-report.txt)). **T3 and T4 are built too**, all of both: community voting, comments, hidden results, shuffled ballots and anti-abuse (T3, [`acceptance-report-t3.txt`](acceptance-report-t3.txt): 15 of 15), and the REST API, signed webhooks, signed certificates, verifiable judge records, an embeddable widget and bulk import (T4, [`acceptance-report-t4.txt`](acceptance-report-t4.txt): 12 of 12). Both are recorded as evidence, not claimed, because the official checker has no T3 or T4 checks ([why](#why-t3-and-t4-are-evidence-not-a-claim)) |
+| **Tiers** | Claims **all four, T1 to T4**, and every one has a passing receipt. The official checker verifies the two it has checks for, 7 of 7 ([`acceptance-report.txt`](acceptance-report.txt)), and ends with its standard note for the rest, `claimed but not verified: T3 T4`, because `run.py` has no T3 or T4 checks. Our own checkers verify those, in the same format, against the same `docker compose up`: **T3** (community voting, comments, hidden results, shuffled ballots, anti-abuse) **15 of 15** ([`acceptance-report-t3.txt`](acceptance-report-t3.txt)) and **T4** (REST API, signed webhooks, signed certificates, verifiable judge records, embeddable widget, bulk import) **12 of 12** ([`acceptance-report-t4.txt`](acceptance-report-t4.txt)). CI reruns all three on every push ([more](#what-the-official-report-says-about-t3-and-t4)) |
 | **One command** | `docker compose up`: seeded with the DOGFOOD fixtures, works with the network off |
 | **Dependencies** | **Zero at runtime.** Node 24's standard library (`node:http`, `node:sqlite`, `node:crypto`). No `npm install`, no build step |
 | **Tests** | **1,801 of our own, all passing** (`npm test`, about 20 s), including **one test per rule** on the spec page. With the official checker (7), our T3 and T4 checkers (15 and 12) and a headless browser pass (16), that is **1,851 automated checks**, plus a network-off proof, all rerun by CI on every push. [How we tested](#how-we-tested) |
@@ -109,7 +109,7 @@ python3 run.py .dogfood.toml
 ```text
 DOGFOOD 2026 acceptance report
 portal: http://localhost:8080
-claimed: T1 T2
+claimed: T1 T2 T3 T4
 fixtures: fixtures.json
 
 T1  gallery is public ................. PASS
@@ -120,8 +120,13 @@ T2  judge cannot see peer scores ...... PASS
 T2  participant blocked ............... PASS
 T2  csv export works .................. PASS
 
-claimed T1 T2, verified T1 T2
+claimed T1 T2 T3 T4, verified T1 T2
+note: claimed but not verified: T3 T4
 ```
+
+`run.py` has checks for T1 and T2 only, so the note is how it reports every tier above T2. Run
+`python3 scripts/t3_check.py .dogfood.toml` and `python3 scripts/t4_check.py .dogfood.toml` next for
+T3 (15 checks) and T4 (12 checks), in the same format.
 
 `run.py` and `fixtures.json` are the organizers' published files, unmodified (sha256 prefixes
 `aa98963841bc8e18` and `252896bc45d49fca`). The committed
@@ -262,7 +267,7 @@ append-only *in the database*: triggers reject `UPDATE` and `DELETE`.
 
 ### Tier 3: public
 
-Built and tested, recorded as evidence rather than claimed (see below). Demo mode opens a vote
+Built, tested and claimed; `run.py` has no T3 checks, so our own checker is its receipt (see below). Demo mode opens a vote
 for two weeks from first boot, so all of it can be tried at once.
 
 | Requirement | How Forgeboard does it |
@@ -280,7 +285,7 @@ for two weeks from first boot, so all of it can be tried at once.
 
 ### Tier 4: stretch
 
-All six built and tested, also recorded as evidence rather than claimed. `python3 scripts/t4_check.py
+All six built, tested and claimed. `python3 scripts/t4_check.py
 .dogfood.toml` against `docker compose up` prints **12 of 12**
 ([`acceptance-report-t4.txt`](acceptance-report-t4.txt)), and CI reruns it on every push.
 
@@ -293,15 +298,17 @@ All six built and tested, also recorded as evidence rather than claimed. `python
 | Embeddable widget | `/embed/<slug>` (gallery) and `?view=results`: no site chrome, for an `<iframe>`; organizers copy the snippet from the Export tab. The **only framable page**, with no script and no form, and it shows nothing the public pages do not |
 | Bulk import | Paste `name,email,tracks` lines to invite many judges at once. Every row follows the single-invite rules, the import is **one transaction** (one bad line and nothing is imported), and the refusal names every bad line. Whole events come in through `cli.ts import` (the fixtures format) |
 
-#### Why T3 and T4 are evidence, not a claim
+#### What the official report says about T3 and T4
 
-`run.py` has checks for T1 and T2 only, so any report that claims more ends with
-`note: claimed but not verified: T3 T4`. We keep `.dogfood.toml` at `claimed = ["T1", "T2"]`, the
-tiers the official receipt can prove, and give T3 and T4 their own receipts in the same format:
-[`acceptance-report-t3.txt`](acceptance-report-t3.txt) (15 of 15) and
-[`acceptance-report-t4.txt`](acceptance-report-t4.txt) (12 of 12), both rerun by CI against a fresh
-`docker compose up`, with 145 more tests behind them (`community`, `records`, `webhooks`, `embed` and
-`bulk-import` in `tests/http/`). If the organizers prefer T3 and T4 in the claim, it is one line.
+`.dogfood.toml` claims `["T1", "T2", "T3", "T4"]`. `run.py` has checks for T1 and T2 only, so the
+committed report reads `claimed T1 T2 T3 T4, verified T1 T2` and ends with
+`note: claimed but not verified: T3 T4`: that is how it reports any tier it cannot test, not a
+failed check. T3 and T4 have their own receipts in the same format, run against the same
+`docker compose up` right after `run.py`:
+[`acceptance-report-t3.txt`](acceptance-report-t3.txt) (**15 of 15**) and
+[`acceptance-report-t4.txt`](acceptance-report-t4.txt) (**12 of 12**). CI reruns all three on every
+push and fails if any differs by a byte from what is committed, and 145 more tests stand behind them
+(`community`, `records`, `webhooks`, `embed` and `bulk-import` in `tests/http/`).
 
 ---
 
@@ -491,7 +498,7 @@ the same function serves the HTML form, the JSON API and the tests.
 ```text
 .
 ├── README.md  ARCHITECTURE.md  DATA-MODEL.md  JUDGING.md  THREAT-MODEL.md  DEMO-SCRIPT.md
-├── .dogfood.toml           where things are, for the checker (claims T1 and T2)
+├── .dogfood.toml           where things are, for the checker (claims T1 to T4)
 ├── acceptance-report.txt   the checker's output, committed
 ├── acceptance-report-t3.txt  scripts/t3_check.py's output (T3, same format), committed
 ├── .github/workflows/ci.yml  types, tests, checker, T3 and T4 diffs, signed-results verify, network off
@@ -533,7 +540,7 @@ All of these were run on the final code in this repository.
 
 | Check | Result | Reproduce with |
 |---|---|---|
-| Official checker against a fresh `docker compose up` | **7 of 7 PASS**, `claimed T1 T2, verified T1 T2`, byte-identical to the committed report | `python3 run.py .dogfood.toml` |
+| Official checker against a fresh `docker compose up` | **7 of 7 PASS**, `claimed T1 T2 T3 T4, verified T1 T2` (`run.py` checks T1 and T2 only), byte-identical to the committed report | `python3 run.py .dogfood.toml` |
 | T4 checks, same style, after the T3 checks | **12 of 12 PASS** ([`acceptance-report-t4.txt`](acceptance-report-t4.txt)): OpenAPI for every action, a UI action answering JSON, bulk import and its all-or-nothing refusal, a webhook added, its signed ping and `results.published` delivered, a certificate verified, judge A's record showing every review counted, judge B refused it, the widget framable and nothing else | `python3 scripts/t4_check.py .dogfood.toml` |
 | T3 checks, same style, against `docker compose up` | **15 of 15 PASS** ([`acceptance-report-t3.txt`](acceptance-report-t3.txt)): ballot page public, tally hidden from public and participants, judges refused, own project refused, one ballot per account, shuffled order, comments signed-in and escaped, take-down refused to others, votes CSV, refusals audited | `python3 scripts/t3_check.py .dogfood.toml` |
 | CI on every push | Types, tests, the official checker and our T3 and T4 checkers each diffed against its committed report, publish-then-verify of signed results, and the network-off check | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
@@ -752,7 +759,7 @@ forward-only migration, `src/db/migrations/002_….sql`; the shipped schema is n
 
 | Criterion | Weight | Evidence in this repository |
 |---|---|---|
-| **Tier completion and correctness** | 40% | [`acceptance-report.txt`](acceptance-report.txt): 7 of 7. [`.dogfood.toml`](.dogfood.toml) claims exactly T1 and T2; T3 and T4 are built in full, each with its own receipt in the same format ([`acceptance-report-t3.txt`](acceptance-report-t3.txt): 15 of 15; [`acceptance-report-t4.txt`](acceptance-report-t4.txt): 12 of 12), and [section 13](#13-honest-limitations) lists what is missing. 1,801 tests ([how we tested](#how-we-tested)), including every fixture review, judge and project swept over HTTP and the lifecycle through the real forms |
+| **Tier completion and correctness** | 40% | [`acceptance-report.txt`](acceptance-report.txt): 7 of 7. [`.dogfood.toml`](.dogfood.toml) claims T1 to T4: `run.py` verifies T1 and T2, and T3 and T4, built in full, each have their own receipt in the same format ([`acceptance-report-t3.txt`](acceptance-report-t3.txt): 15 of 15; [`acceptance-report-t4.txt`](acceptance-report-t4.txt): 12 of 12), and [section 13](#13-honest-limitations) lists what is missing. 1,801 tests ([how we tested](#how-we-tested)), including every fixture review, judge and project swept over HTTP and the lifecycle through the real forms |
 | **Judging integrity** | 25% | Isolation in the domain layer, tested as a matrix ([section 4](#4-who-can-see-what-backend-enforced-isolation)). A normalization method with evidence and stated limits, rank intervals and a leave-one-judge-out check ([JUDGING.md](JUDGING.md)). The method fixed when scoring starts. Signed results that verify and refit offline. A hash-chained, append-only audit trail an organizer reads in plain sentences, including refused attempts. Abuse considered up front ([THREAT-MODEL.md](THREAT-MODEL.md)) |
 | **Adoptability and operability** | 20% | One command, network off, seeded with the fixtures. Zero runtime dependencies. Production steps, settings, backup and recovery ([section 8](#8-running-it-for-a-real-event)). Import and export at every stage ([section 9](#9-getting-data-in-and-out)). MIT |
 | **Code quality and innovation** | 15% | One-way layering, a schema that enforces its own invariants ([DATA-MODEL.md](DATA-MODEL.md)), strict TypeScript with no build step, and the decisions in [ARCHITECTURE.md](ARCHITECTURE.md), each with the cost we accepted |
@@ -770,9 +777,9 @@ forward-only migration, `src/db/migrations/002_….sql`; the shipped schema is n
 
 ## 13. Honest limitations
 
-- **T3 and T4 are built but claimed only as evidence** (see
-  [why](#why-t3-and-t4-are-evidence-not-a-claim)): their receipts are our own scripts, in the official
-  format, because `run.py` has no checks for them.
+- **T3 and T4 are verified by our checkers, not the organizers'.** `run.py` has no checks for them,
+  so its report notes them as "claimed but not verified"; our receipts use its format and run in CI
+  (see [what the report says](#what-the-official-report-says-about-t3-and-t4)).
 - **Webhooks are delivered at least once.** A receiver that answers after our five-second timeout
   may see the same delivery again; the `Forgeboard-Delivery` id lets it drop duplicates. They go to
   any http(s) address the organizer enters, including machines on the organizer's own network.
