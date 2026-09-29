@@ -64,4 +64,62 @@ describe('organizer tools', () => {
     const submitted = store().get<{ id: string }>("SELECT a.id FROM assignments a JOIN reviews r ON r.assignment_id = a.id WHERE r.status = 'submitted' LIMIT 1")?.id ?? '';
     assert.equal((await org.postForm(`${S}/assignments/${submitted}/remove`, {})).status, 409, 'a submitted review stays on record');
   });
+
+  test('auto-assign tops the fixture up to three reviews per project where tracks allow', async () => {
+    const reply = await org.postForm(`${S}/assignments/auto`, {});
+    assert.equal(reply.status, 200);
+    const created = Number(extract(reply.text, /Created (\d+) assignment/));
+    assert.ok(created >= 8, `created ${created}`);
+    const short = store().get<{ n: number }>(
+      "SELECT count(*) AS n FROM projects p WHERE p.event_id = 'evt_01' AND p.status = 'submitted' AND p.superseded_by IS NULL AND (SELECT count(*) FROM assignments a WHERE a.project_id = p.id) < 3",
+    )?.n;
+    assert.equal(short, 0);
+    // Every new assignment respects the judge's tracks.
+    const offTrack = store().get<{ n: number }>(
+      `SELECT count(*) AS n FROM assignments a JOIN projects p ON p.id = a.project_id
+       WHERE a.source = 'auto' AND EXISTS (SELECT 1 FROM judge_tracks t WHERE t.judge_id = a.judge_id AND t.event_id = a.event_id)
+         AND NOT EXISTS (SELECT 1 FROM judge_tracks t WHERE t.judge_id = a.judge_id AND t.track_id = p.track_id)`,
+    )?.n;
+    assert.equal(offTrack, 0);
+    assert.equal((await org.postForm(`${S}/assignments/auto`, {})).text.match(/Created (\d+)/)?.[1], '0', 'running it again adds nothing');
+  });
+
+  test('a judge with submitted reviews cannot be removed', async () => {
+    assert.equal((await org.postForm(`${S}/judges/jdg_24/remove`, {})).status, 409);
+  });
+
+  test('changing the deadline is audited with before and after', async () => {
+    const settings = await org.get(`${S}/settings`);
+    assert.match(settings.text, /value="2026-03-01T18:00"/);
+    const reply = await org.postForm(`${S}/settings`, {
+      name: 'Sample Hack 2026', tagline: 'Imported from the DOGFOOD fixtures.', description: 'x',
+      submissions_close_at: '2026-03-01T19:00', max_team_size: '4', reviews_per_project: '3',
+    });
+    assert.equal(reply.status, 303);
+    assert.match((await org.get(`${S}/audit?action=event.updated`)).text, /Changed description, submissions close at/);
+    const bad = await org.postForm(`${S}/settings`, { name: '', submissions_close_at: '', max_team_size: '99' });
+    assert.equal(bad.status, 422);
+  });
+
+  test('publish, then withdraw: the public page follows, snapshots are kept', async () => {
+    assert.equal((await org.postForm(`${S}/results/publish`, {})).status, 303);
+    assert.match((await new Client(server.url).get('/events/sample-hack-2026/results')).text, /Iron Switch|Salt Ledger/);
+    assert.match((await new Client(server.url).get('/projects')).text, /Rank 1/);
+    assert.equal((await org.postForm(`${S}/results/unpublish`, {})).status, 303);
+    assert.match((await new Client(server.url).get('/events/sample-hack-2026/results')).text, /Not published yet/);
+    assert.equal(store().get<{ n: number }>('SELECT count(*) AS n FROM result_snapshots')?.n, 1);
+  });
+
+  test('an administrator issues a one-time password link: the recovery path', async () => {
+    const admin = new Client(server.url);
+    await admin.signIn('admin@forgeboard.local');
+    const reply = await admin.postForm('/admin/users/jdg_01/link', {});
+    assert.equal(reply.status, 200);
+    const link = extract(reply.text, /value="https?:\/\/[^"]*(\/password\/[\w-]+)"/);
+    const tomas = new Client(server.url);
+    assert.match((await tomas.get(link)).text, /Set up your account/);
+    assert.equal((await tomas.postForm(link, { password: 'tomas-password' }, { tokenFrom: link })).status, 303);
+    assert.equal((await tomas.get('/api/me')).json<{ user: { id: string } }>().user.id, 'jdg_01');
+    assert.equal((await new Client(server.url).get(link)).status, 410);
+  });
 });
