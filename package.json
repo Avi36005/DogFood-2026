@@ -14,6 +14,7 @@
     "test": "node --disable-warning=ExperimentalWarning --test --test-concurrency=1 \"tests/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json",
     "study": "node --disable-warning=ExperimentalWarning research/normalization-study.ts",
+    "study:pairwise": "node --disable-warning=ExperimentalWarning research/pairwise-study.ts",
     "check:browser": "node --disable-warning=ExperimentalWarning scripts/browser-check.ts",
     "check:offline": "sh scripts/offline-check.sh"
   },

@@ -37,7 +37,7 @@ export function queuePage(ctx: Ctx, event: EventRow, items: QueueItem[]): SafeHt
 ${pageHeader('Your judging queue', {
   eyebrow: html`<a href="/events/${event.slug}">${event.name}</a>`,
   lead: `${done} of ${items.length} submitted. Scores use a ${event.score_min}–${event.score_max} scale. Other judges’ scores are never shown to you.`,
-  actions: next && open ? linkButton(`/judge/reviews/${next.assignment_id}`, done === 0 ? 'Start judging' : 'Next unfinished', 'primary') : '',
+  actions: html`${next && open ? linkButton(`/judge/reviews/${next.assignment_id}`, done === 0 ? 'Start judging' : 'Next unfinished', 'primary') : ''}${items.filter((i) => !i.replaced).length >= 2 ? linkButton(`/judge/${event.slug}/compare`, 'Compare mode') : ''}`,
 })}
 ${meter(done, items.length, `${done} of ${items.length} reviews submitted`)}
 ${phaseOf(event, ctx.now).key === 'open' ? notice('info', html`Judging opens when submissions close, ${when(event.submissions_close_at, ctx.now)}. You can read your assignments now.`) : ''}

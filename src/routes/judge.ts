@@ -1,9 +1,11 @@
 import { myEventRoles } from '../domain/access.ts';
+import { compareView, recordChoice } from '../domain/compare.ts';
 import { getEvent } from '../domain/events.ts';
 import { acceptJudgeInvite, claimJudgeInvite, findJudgeInvite, judgeQueue, reviewPage, saveReview } from '../domain/judging.ts';
 import type { RouteModule } from '../http/app.ts';
 import { unauthorized, ValidationError } from '../util/errors.ts';
 import { linkUsedPage, passwordLinkPage } from '../views/auth.ts';
+import { comparePage } from '../views/compare.ts';
 import { judgeHomePage, judgeInviteAcceptPage, queuePage, reviewFormPage } from '../views/judge.ts';
 import { signInAs } from './auth.ts';
 
@@ -27,6 +29,18 @@ export const judgeRoutes: RouteModule = (router, { store }) => {
   router.get('/judge/:slug', (ctx) => {
     const event = getEvent(store, ctx.params.slug as string);
     ctx.html(queuePage(ctx, event, judgeQueue(store, ctx.actor, event)));
+  });
+
+  router.get('/judge/:slug/compare', (ctx) => {
+    const event = getEvent(store, ctx.params.slug as string);
+    ctx.html(comparePage(ctx, compareView(store, ctx.actor, event)));
+  });
+
+  router.post('/judge/:slug/compare', async (ctx) => {
+    const event = getEvent(store, ctx.params.slug as string);
+    recordChoice(store, ctx.actor, event, await ctx.body());
+    if (ctx.wantsJson) return ctx.json({ ok: true });
+    ctx.redirect(`/judge/${event.slug}/compare`);
   });
 
   router.get('/judge/reviews/:id', (ctx) => {
