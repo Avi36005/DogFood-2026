@@ -255,3 +255,86 @@ export function autoAssign(store: Store, actor: Actor, event: EventRow, options:
   });
 }
 
+export function assignManually(store: Store, actor: Actor, event: EventRow, body: Body): void {
+  const organizer = requireOrganizer(store, actor, event, `assign a judge in ${event.name}`);
+  const form = new FormReader(body);
+  const projectId = form.text('project_id', { label: 'Project', required: true, max: 60 });
+  const judgeId = form.text('judge_id', { label: 'Judge', required: true, max: 60 });
+  form.assertValid();
+  store.tx(() => {
+    const project = store.get<ProjectRow>('SELECT * FROM projects WHERE id = ? AND event_id = ?', [projectId, event.id]);
+    if (!project || project.status !== 'submitted' || project.superseded_by) throw new ValidationError({ project_id: 'Choose a submitted project from this event.' });
+    if (!rolesIn(store, judgeId, event.id).has('judge')) throw new ValidationError({ judge_id: 'Choose a judge of this event.' });
+    if (conflictedJudges(store, projectId).has(judgeId)) throw new ValidationError({ judge_id: 'This judge is on the project’s team.' });
+    if (store.get('SELECT 1 FROM assignments WHERE project_id = ? AND judge_id = ?', [projectId, judgeId])) {
+      throw new ValidationError({ judge_id: 'This judge already has this project.' });
+    }
+    const id = newId('asg');
+    store.run("INSERT INTO assignments (id, event_id, project_id, judge_id, source, created_by, created_at) VALUES (?, ?, ?, ?, 'manual', ?, ?)", [
+      id, event.id, projectId, judgeId, organizer.id, iso(actor.now),
+    ]);
+    record(store, actor, { eventId: event.id, action: 'assignment.manual', subjectType: 'assignment', subjectId: id, summary: `Assigned “${project.title}” to judge ${judgeId}.` });
+  });
+}
+
+export function unassign(store: Store, actor: Actor, event: EventRow, assignmentId: string): void {
+  requireOrganizer(store, actor, event, `remove an assignment in ${event.name}`);
+  store.tx(() => {
+    const assignment = store.get<AssignmentRow & { review_status: string | null }>(
+      'SELECT a.*, r.status AS review_status FROM assignments a LEFT JOIN reviews r ON r.assignment_id = a.id WHERE a.id = ? AND a.event_id = ?',
+      [assignmentId, event.id],
+    );
+    if (!assignment) throw notFound('No such assignment.');
+    if (assignment.review_status === 'submitted') throw conflict('This review is submitted and stays on record.');
+    store.run('DELETE FROM assignments WHERE id = ?', [assignmentId]);
+    record(store, actor, { eventId: event.id, action: 'assignment.removed', subjectType: 'assignment', subjectId: assignmentId, summary: `Removed the assignment of ${assignment.project_id} to ${assignment.judge_id}${assignment.review_status ? ' and its draft review' : ''}.` });
+  });
+}
+
+// Reviews -----------------------------------------------------------------------------
+
+export interface QueueItem {
+  assignment_id: string;
+  project_id: string;
+  title: string;
+  summary: string;
+  team_name: string;
+  track_name: string | null;
+  review_status: 'draft' | 'submitted' | null;
+  updated_at: string | null;
+  replaced: 0 | 1;
+}
+
+/** A judge's own work in one event. The query is keyed on the caller's id; there is no parameter to ask for anyone else's. */
+export function judgeQueue(store: Store, actor: Actor, event: EventRow): QueueItem[] {
+  const judge = requireRole(store, actor, event, ['judge'], `open the judging queue of ${event.name}`);
+  return store.all<QueueItem>(
+    `SELECT a.id AS assignment_id, p.id AS project_id, p.title, p.summary, t.name AS team_name, tr.name AS track_name,
+       r.status AS review_status, r.updated_at, (p.superseded_by IS NOT NULL OR p.status <> 'submitted') AS replaced
+     FROM assignments a JOIN projects p ON p.id = a.project_id JOIN teams t ON t.id = p.team_id
+     LEFT JOIN tracks tr ON tr.id = p.track_id LEFT JOIN reviews r ON r.assignment_id = a.id
+     WHERE a.event_id = ? AND a.judge_id = ?
+     ORDER BY (r.status = 'submitted'), (r.status IS NULL) DESC, p.title`,
+    [event.id, judge.id],
+  );
+}
+
+export interface ReviewPage {
+  assignment: AssignmentRow;
+  event: EventRow;
+  project: ProjectRow & { team_name: string; track_name: string | null };
+  criteria: CriterionRow[];
+  review: ReviewRow | null;
+  scores: Map<string, number>;
+  isOwn: boolean;
+  canEdit: boolean;
+}
+
+function scoreMap(store: Store, assignmentId: string): Map<string, number> {
+  return new Map(
+    store
+      .all<{ criterion_id: string; value: number }>('SELECT criterion_id, value FROM review_scores WHERE assignment_id = ?', [assignmentId])
+      .map((row) => [row.criterion_id, row.value]),
+  );
+}
+
