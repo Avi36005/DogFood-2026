@@ -97,3 +97,53 @@ $$ a_p = \operatorname{mean}_{j \in J(p)} (x_{jp} - \mu - b_j), \qquad b_j = \fr
 **Projects are ranked by μ + a<sub>p</sub>**: their score with each judge's fitted offset taken
 out, on the same 1–5 scale as the raw mean shown beside it. Ties share a rank (1, 2, 2, 4).
 
+**What λ means.** The denominator n<sub>j</sub> + λ treats every judge as if they had also filed
+λ = 2 reviews with zero bias. A judge seen once is barely moved. A judge with eleven reviews is
+corrected almost fully. Without this term, the model believes whatever a single review says:
+fitted unshrunk on all 126 reviews, `jdg_01` is declared 1.60 points harsh on the strength of one review;
+with λ = 2 the same review gives −0.45.
+
+**Properties.**
+- *Unique and convergent.* With λ > 0 the objective is strictly convex in (a, b) when every
+  project has at least one review, so coordinate descent converges to the one minimum. The
+  fixture needs 75 iterations.
+- *Deterministic.* Keys are visited in sorted order, so the same reviews produce the same bits
+  whatever the input order. [`tests/unit/normalization.test.ts`: *is deterministic*]
+- *Everyone counts.* No judge is dropped and no review is discarded. That matters on this data,
+  where a third of the judges have two reviews or fewer.
+- *Connected.* The fixture's judge–project graph is one connected component, so every offset is
+  estimated on a common scale. On a disconnected event the shrinkage still keeps the fit
+  defined, and each island's offsets are pulled toward zero rather than floating free.
+
+### A worked example you can check by hand
+
+Two judges, two projects, every judge sees every project. Judge A is exactly one point more generous.
+
+| | p1 | p2 |
+|---|---|---|
+| judge A | 4 | 3 |
+| judge B | 3 | 2 |
+
+μ = 3. By symmetry b<sub>A</sub> = −b<sub>B</sub>, so a<sub>1</sub> = +0.5 and a<sub>2</sub> = −0.5.
+Then b<sub>A</sub> = ((4 − 3 − 0.5) + (3 − 3 + 0.5)) / (2 + 2) = **+0.25** and
+b<sub>B</sub> = **−0.25**: half of the one-point gap, because two reviews each are thin evidence.
+With λ = 0 the full ±0.5 comes back. [`tests/unit/normalization.test.ts`: *hand-computed cases*]
+
+### Why this method: the evidence
+
+The alternatives were tested on the fixture's own judge–project layout.
+`research/normalization-study.ts` keeps exactly who reviewed what (121 reviews, 40 projects,
+29 judges). It invents a known true quality per project and a bias per judge, then generates
+integer 1–5 criterion scores from them and checks each method's ranking against the truth,
+over 300 simulated events per scenario. It is seeded, so `npm run study` prints the same tables
+every time (`research/normalization-study-output.md`).
+
+| Method | Bias only | Bias and spread (×0.5–×2) | Strong bias | No bias (null case) |
+|---|---|---|---|---|
+| A. Raw mean | 0.840 | 0.835 | 0.763 | **0.904** |
+| B. Per-judge z-score, judges with ≥ 3 reviews | 0.803 | 0.802 | 0.801 | 0.807 |
+| C. Per-judge z-score, judges with ≥ 2 reviews | 0.808 | 0.807 | 0.805 | 0.813 |
+| D. Offsets, no shrinkage (λ = 0) | 0.700 | 0.705 | 0.701 | 0.715 |
+| **E. Offsets, λ = 2 (Forgeboard)** | **0.867** | **0.857** | **0.819** | 0.900 |
+| F. Offsets, λ = 5 | 0.860 | 0.852 | 0.801 | 0.903 |
+
