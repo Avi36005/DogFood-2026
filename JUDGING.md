@@ -197,3 +197,53 @@ results and the results CSV. [`tests/unit/normalization.test.ts`: *reproduces th
 - **Few reviews mean wide uncertainty.** A project ranked on two reviews is flagged "few reviews"
   (fewer than 2 is the threshold; none on this fixture), and its position should be read with that in mind.
 
+## 4. The awkward cases in the fixture
+
+| Case | What the data shows | Policy |
+|---|---|---|
+| **A judge who gave everyone the same score** | `jdg_07` (Iva Petrova) scored 4/4/4 on all three reviews (`prj_09`, `prj_17`, `prj_19`). | Flagged **"identical scores"** in red for the organizer. Their reviews still count. Their generosity is absorbed by their offset (+0.26), and they cannot change the order among their own projects, so no extra rule is needed and no data is thrown away. |
+| **A judge whose totals happen to tie** | `jdg_19` (Mira Kaur) gave varied criterion scores, (3,5,3), (3,4,4) and (5,4,2), but under equal weights each totals exactly 11/15. | Flagged **"same total"**, a separate and softer flag. It is a coincidence of the weights, not flat scoring, and it disappears if the organizer reweights the rubric. Found while testing; the flag was split so it does not misdescribe that judge. [`tests/unit/data.test.ts`: *judge flags on the fixture*] |
+| **Two unfinished review batches** | The file does not label batches. They show up as uneven coverage: projects with 2 reviews next to projects with 5. | Nothing assumes a complete matrix. Coverage per project and per track is on the live dashboard. Auto-assign can top short projects up. A project with fewer than 2 reviews is still ranked but flagged. Which scores belonged to which batch is not recoverable from the file, and we say so instead of guessing. |
+| **A duplicate submission** | `prj_41` "Dry Harbour" resubmits `prj_07` "Dry Harbour", same team `tm_07`, 13 hours later and 3 minutes before the deadline. `prj_07` has 5 reviews and `prj_41` has 4. | **One live project per team, enforced by a unique index.** The latest submission counts. The earlier one is kept, with its reviews, marked *replaced by* `prj_41`, and hidden from the gallery and the ranking. The import writes this to the audit trail, and the organizer can reverse it with one click (also audited). Nothing is merged or deleted. One consequence, stated rather than hidden: `jdg_01` reviewed only `prj_07`, so that judge drops out of the fit while `prj_41` counts. [`tests/http/organizer.test.ts`: *the duplicate decision can be reversed*] |
+| **Judges with few reviews** | 7 of the 29 counted judges filed 2 reviews or fewer. | Kept, and flagged "few reviews". Shrinkage keeps their offsets small instead of excluding them. A "3 reviews minimum" rule would throw away those 7 judges and 12 of the 121 reviews. |
+| **Teams that share a name** | `tm_03`, `tm_30` and `tm_40` are all "StillTrail", with different members. So are two "AmberSwitch" teams and two "OpenSignal" teams. | Kept as separate teams, since their members differ, and reported at import. New teams created in the portal must choose an unused name. |
+
+## 5. Isolation: who can see which scores
+
+| Who | Can see |
+|---|---|
+| A judge | Their own assignments and their own scores, in their queue and at `GET /api/judge/scores`. |
+| Another judge | Nothing. `GET /api/judge/scores?judge=<someone else>` returns **403**. The review page of another judge's assignment returns **403**. |
+| An organizer | Every score in the events they organize, read-only. Organizers cannot score on a judge's behalf. |
+| A participant or visitor | Published results only. Before publication the results page says so, and no ranking leaves the server. |
+
+These rules live in the domain layer, which pages and the JSON API both go through. A judge's
+queue query is keyed on the caller's id, so there is no parameter to ask for anyone else's.
+Refusals are decided from the caller's roles *before* the requested judge is looked up, so a
+403 says nothing about whether that judge exists. Every refused attempt to read scores or reviews is written to the event's audit
+trail, for example *"Ines Rocha <ines.rocha@example.org> was refused the scores of another judge
+(jdg_24)."* It is recorded after the request's transaction has rolled back, so a refused write
+cannot take its audit entry down with it. [`tests/http/matrix.test.ts`, `tests/http/checker.test.ts`]
+
+## 6. Publishing
+
+Results stay private while judging runs. The organizer sees a live preview, recomputed on every
+load. **Publishing** freezes the ranking into a snapshot and records:
+- the method name and version (`additive-offsets-ridge/v1`) and λ
+- the rubric weights
+- the number of reviews
+- every project's rank, normalized score, raw mean and review count
+- every judge's offset
+
+Publishing also closes judging, so reviews become final. Publishing again supersedes the previous
+snapshot without deleting it, and withdrawing results hides them without deleting anything. A
+published ranking can therefore be reproduced months later from its own record.
+
+## 7. What we would do next
+
+- **Pairwise mode** (Bradley–Terry) for events large enough that judges compare rather than score.
+- **Uncertainty on the ranking**: a bootstrap over reviews to show which adjacent ranks are
+  statistically distinguishable.
+- **Conflict declarations** beyond team membership: a judge marking a project as a conflict.
+- **Assignment that maximizes overlap between judges**, which strengthens the offset estimates, as
+  an explicit objective rather than a side effect of load balancing.
