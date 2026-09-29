@@ -4,6 +4,7 @@ import { slugify } from '../util/form.ts';
 import { iso, parseInstant } from '../util/time.ts';
 import { grantRole } from './access.ts';
 import { record } from './audit.ts';
+import { commitMethodIfFirst } from './commitment.ts';
 import { DEFAULT_CRITERIA } from './events.ts';
 import type { Actor } from './types.ts';
 
@@ -302,6 +303,7 @@ export function importFixtures(store: Store, actor: Actor, data: unknown): Impor
       }
     });
     counts.scores = fixture.scores.length;
+    if (fixture.scores.length) commitMethodIfFirst(store, actor, event.id);
 
     record(store, actor, {
       eventId: event.id,

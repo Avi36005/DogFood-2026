@@ -6,6 +6,7 @@ import { addDays, iso } from '../util/time.ts';
 import { AccessDenied, grantRole, requireOrganizer, requireRole, requireUser, rolesIn } from './access.ts';
 import { ensureUser, findUserByEmail } from './accounts.ts';
 import { actorLabel, record } from './audit.ts';
+import { commitMethodIfFirst } from './commitment.ts';
 import { planAssignments, type PlanJudge, type PlanProject, type Shortfall } from './assignment.ts';
 import { assertJudgingOpen, getEvent, judgingOpen, listCriteria, listTracks } from './events.ts';
 import { hashPassword, passwordProblem } from './passwords.ts';
@@ -424,6 +425,7 @@ export function saveReview(store: Store, actor: Actor, assignmentId: string, bod
     for (const [criterionId, value] of values) {
       store.run('INSERT INTO review_scores (assignment_id, criterion_id, value) VALUES (?, ?, ?)', [assignmentId, criterionId, value]);
     }
+    if (values.size) commitMethodIfFirst(store, actor, page.event.id);
     const verb = status === 'draft' ? 'saved a draft review of' : wasSubmitted ? 'revised their review of' : 'submitted a review of';
     record(store, actor, {
       eventId: page.event.id,
