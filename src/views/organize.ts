@@ -158,3 +158,79 @@ export interface SettingsView {
   errors?: Record<string, string>;
 }
 
+export function settingsPage(ctx: Ctx, view: SettingsView): SafeHtml {
+  const { event } = view;
+  const values = view.values ?? {
+    name: event.name,
+    tagline: event.tagline,
+    description: event.description,
+    submissions_open_at: toDatetimeLocal(event.submissions_open_at),
+    submissions_close_at: toDatetimeLocal(event.submissions_close_at),
+    judging_close_at: toDatetimeLocal(event.judging_close_at),
+    max_team_size: String(event.max_team_size),
+    reviews_per_project: String(event.reviews_per_project),
+  };
+  return organizerPage(ctx, event, 'settings', 'Event settings', html`
+<div class="two-col wide-left">
+  <div>
+    ${section('Details and dates', html`${formErrors(view.errors)}
+      <form method="post" action="/organize/${event.slug}/settings" novalidate>${csrf(ctx)}${eventFields(values, view.errors)}
+      <p class="hint">All times are UTC. Moving the deadline is audited; the server enforces whatever is saved here.</p>
+      <div class="form-actions">${button('Save settings')}</div></form>`)}
+  </div>
+  <aside>
+    ${section('Tracks', html`<ul class="row-list">${view.tracks.map((t) => html`<li><span>${t.name}</span>${t.projects ? html`<span class="muted small">${t.projects} project${t.projects === 1 ? '' : 's'}</span>` : actionForm(ctx, `/organize/${event.slug}/tracks/${t.id}/remove`, 'Remove', { small: true, variant: 'ghost' })}</li>`)}</ul>
+      <form method="post" action="/organize/${event.slug}/tracks" class="inline-add">${csrf(ctx)}${input({ name: 'name', id: 'track-name', label: 'New track', maxlength: 80 })}${button('Add track', { variant: 'secondary', small: true })}</form>`)}
+    ${section('Prizes', html`${view.prizes.length ? html`<ul class="row-list">${view.prizes.map((p) => html`<li><span><strong>${p.name}</strong> <span class="muted">${p.track_name ?? 'overall'}</span></span>${actionForm(ctx, `/organize/${event.slug}/prizes/${p.id}/remove`, 'Remove', { small: true, variant: 'ghost' })}</li>`)}</ul>` : html`<p class="muted">No prizes yet.</p>`}
+      <form method="post" action="/organize/${event.slug}/prizes" class="stack-form">${csrf(ctx)}
+        ${input({ name: 'name', id: 'prize-name', label: 'Prize name', maxlength: 120 })}
+        ${select({ name: 'track_id', id: 'prize-track', label: 'For track', blank: 'Overall', options: view.tracks.map((t) => ({ value: t.id, label: t.name })) })}
+        ${input({ name: 'description', id: 'prize-description', label: 'Description', maxlength: 1000 })}
+        ${button('Add prize', { variant: 'secondary', small: true })}</form>`)}
+    ${section('Organizers', html`<ul class="plain-list">${view.organizers.map((o) => html`<li>${o.name} <span class="muted">${o.email}</span></li>`)}</ul>
+      <form method="post" action="/organize/${event.slug}/organizers" class="inline-add">${csrf(ctx)}${input({ name: 'email', id: 'organizer-email', label: 'Add organizer by email', type: 'email' })}${button('Add', { variant: 'secondary', small: true })}</form>
+      <p class="hint">Organizers can read every score, so a judge of this event cannot be added.</p>`)}
+  </aside>
+</div>`);
+}
+
+// Rubric -----------------------------------------------------------------------------------
+
+export function rubricPage(ctx: Ctx, event: EventRow, criteria: CriterionRow[], locked: boolean, errors?: Record<string, string>): SafeHtml {
+  const total = criteria.reduce((sum, c) => sum + c.weight, 0);
+  return organizerPage(ctx, event, 'rubric', 'Rubric', html`
+${locked ? notice('info', 'Scoring has started, so criteria and the scale are fixed. You can still rename criteria and change weights; the ranking is recomputed from the stored raw scores, and every change is on the audit trail.', 'Criteria locked.') : ''}
+${formErrors(errors)}
+<form method="post" action="/organize/${event.slug}/rubric" class="panel" novalidate>
+  ${csrf(ctx)}
+  <div class="table-wrap"><table class="data rubric-table">
+    <thead><tr><th scope="col">Criterion</th><th scope="col">Description</th><th scope="col" class="n">Weight</th><th scope="col" class="n">Share</th>${locked ? '' : html`<th scope="col">Remove</th>`}</tr></thead>
+    <tbody>${criteria.map((c) => html`<tr>
+      <td><label class="sr-only" for="name_${c.id}">Name of ${c.name}</label><input id="name_${c.id}" name="name_${c.id}" value="${c.name}" maxlength="80" required> <code class="muted">${c.key}</code></td>
+      <td><label class="sr-only" for="description_${c.id}">Description of ${c.name}</label><input id="description_${c.id}" name="description_${c.id}" value="${c.description}" maxlength="500"></td>
+      <td class="n"><label class="sr-only" for="weight_${c.id}">Weight of ${c.name}</label><input class="num-input" id="weight_${c.id}" name="weight_${c.id}" type="number" min="0.1" max="100" step="0.1" value="${c.weight}" required></td>
+      <td class="n">${total ? `${Math.round((c.weight / total) * 100)}%` : ''}</td>
+      ${locked ? '' : html`<td><label class="check"><input type="checkbox" name="remove_${c.id}"> <span class="sr-only">Remove ${c.name}</span></label></td>`}
+    </tr>`)}</tbody>
+  </table></div>
+  ${locked ? '' : html`<fieldset class="add-row"><legend>Add a criterion</legend><div class="grid-3">
+    ${input({ name: 'new_name', label: 'Name', maxlength: 80 })}${input({ name: 'new_description', label: 'Description', maxlength: 500 })}${input({ name: 'new_weight', label: 'Weight', type: 'number', min: 0.1, max: 100, step: '0.1', value: '1' })}
+  </div></fieldset>
+  <div class="grid-3">${input({ name: 'score_min', label: 'Lowest score', type: 'number', min: 0, max: 10, value: event.score_min })}${input({ name: 'score_max', label: 'Highest score', type: 'number', min: 1, max: 100, value: event.score_max, error: errors?.score_max })}</div>`}
+  ${locked ? html`<input type="hidden" name="score_min" value="${event.score_min}"><input type="hidden" name="score_max" value="${event.score_max}">` : ''}
+  <p class="hint">Weights are relative: 2, 1, 1 means the first criterion counts for half. A review’s score is the weighted mean of its criteria, on the ${event.score_min}–${event.score_max} scale.</p>
+  <div class="form-actions">${button('Save rubric')}</div>
+</form>`, { lead: 'What judges score, and how much each part counts.' });
+}
+
+// Judges ------------------------------------------------------------------------------------
+
+export interface JudgesView {
+  event: EventRow;
+  judges: Progress['judges'];
+  tracks: TrackRow[];
+  inviteLink?: { email: string; url: string } | null;
+  errors?: Record<string, string>;
+  values?: Record<string, string | string[]>;
+}
+
