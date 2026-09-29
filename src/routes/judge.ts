@@ -3,7 +3,7 @@ import { compareView, recordChoice } from '../domain/compare.ts';
 import { getEvent } from '../domain/events.ts';
 import { acceptJudgeInvite, claimJudgeInvite, findJudgeInvite, judgeQueue, reviewPage, saveReview } from '../domain/judging.ts';
 import type { RouteModule } from '../http/app.ts';
-import { unauthorized, ValidationError } from '../util/errors.ts';
+import { HttpError, unauthorized, ValidationError } from '../util/errors.ts';
 import { linkUsedPage, passwordLinkPage } from '../views/auth.ts';
 import { comparePage } from '../views/compare.ts';
 import { judgeHomePage, judgeInviteAcceptPage, queuePage, reviewFormPage } from '../views/judge.ts';
@@ -74,14 +74,17 @@ export const judgeRoutes: RouteModule = (router, { store }) => {
   router.post('/judge-invite/:token', async (ctx) => {
     const token = ctx.params.token as string;
     const invite = findJudgeInvite(store, token, ctx.now);
-    if (!invite) return ctx.html(linkUsedPage(ctx, 'This invitation has expired or was already accepted.'), 410);
+    if (!invite) {
+      if (ctx.wantsJson) throw new HttpError(410, 'This invitation has expired or was already accepted.');
+      return ctx.html(linkUsedPage(ctx, 'This invitation has expired or was already accepted.'), 410);
+    }
     if (!invite.user.password_hash) {
       const body = await ctx.body();
       try {
         const user = await claimJudgeInvite(store, ctx.actor, token, typeof body.password === 'string' ? body.password : '');
         signInAs(ctx, user);
       } catch (error) {
-        if (!(error instanceof ValidationError)) throw error;
+        if (!(error instanceof ValidationError) || ctx.wantsJson) throw error;
         return ctx.html(passwordLinkPage(ctx, { user: invite.user, purpose: 'judge', eventName: invite.event.name, action: ctx.url.pathname, error: error.fields.password }), 422);
       }
     } else {

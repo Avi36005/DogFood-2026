@@ -81,7 +81,7 @@ export const authRoutes: RouteModule = (router, { store, loginLimiter, signupLim
       ctx.flash('success', 'Password saved. You are signed in.');
       ctx.redirect(user.is_admin ? '/admin' : '/dashboard');
     } catch (error) {
-      if (!(error instanceof ValidationError)) throw error;
+      if (!(error instanceof ValidationError) || ctx.wantsJson) throw error;
       const found = findPasswordLink(store, token, ctx.now);
       if (!found) throw error;
       ctx.html(passwordLinkPage(ctx, { user: found.user, purpose: found.link.purpose, action: `/password/${token}`, error: error.fields.password }), 422);
