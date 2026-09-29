@@ -234,3 +234,88 @@ export interface JudgesView {
   values?: Record<string, string | string[]>;
 }
 
+export function judgesPage(ctx: Ctx, view: JudgesView): SafeHtml {
+  const { event, tracks } = view;
+  const trackName = new Map(tracks.map((t) => [t.id, t.name]));
+  const trackOptions = tracks.map((t) => ({ value: t.id, label: t.name }));
+  const chosen = view.values?.track_ids;
+  return organizerPage(ctx, event, 'judges', 'Judges', html`
+${view.inviteLink ? notice('success', html`Send this one-time link to ${view.inviteLink.email}. There is no mail server, so Forgeboard does not send it for you. Only a fingerprint is stored, so copy it now.
+  <span class="copy-row"><input class="copy-field" type="text" readonly value="${view.inviteLink.url}" id="judge-link" aria-label="Judge invite link"><button type="button" class="btn btn-secondary btn-sm" data-copy="judge-link">Copy</button></span>`, 'Judge invited.') : ''}
+<div class="two-col wide-left">
+  <div>
+    ${view.judges.length === 0 ? empty('No judges yet', 'Invite the first one with the form.') : html`<div class="table-wrap"><table class="data">
+      <thead><tr><th scope="col">Judge</th><th scope="col">Tracks</th><th scope="col" class="n">Done</th><th scope="col">Status</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+      <tbody>${view.judges.map((j) => html`<tr>
+        <td><strong>${j.name}</strong><br><span class="muted">${j.email}</span> <code class="muted">${j.id}</code></td>
+        <td><details class="inline-details"><summary>${j.trackIds.length ? j.trackIds.map((id) => trackName.get(id) ?? id).join(', ') : 'All tracks'}</summary>
+          <form method="post" action="/organize/${event.slug}/judges/${j.id}/tracks" class="stack-form">${csrf(ctx)}${checkboxes({ name: 'track_ids', id: `tracks-${j.id}`, label: 'Tracks covered', values: j.trackIds, options: trackOptions, hint: 'None ticked means every track.' })}${button('Save tracks', { variant: 'secondary', small: true })}</form></details></td>
+        <td class="n">${j.submitted}/${j.assigned}</td>
+        <td>${j.has_password ? pill('active', 'success') : pill('invite pending', 'info')}</td>
+        <td>${j.submitted === 0 ? confirmForm(ctx, `/organize/${event.slug}/judges/${j.id}/remove`, 'Remove', `Removes ${j.name} and their ${j.assigned} unfinished assignment(s).`, 'Yes, remove', 'danger') : html`<span class="muted">has reviews</span>`}</td>
+      </tr>`)}</tbody></table></div>`}
+  </div>
+  <aside>
+    ${section('Invite a judge', html`${formErrors(view.errors)}
+      <form method="post" action="/organize/${event.slug}/judges" class="stack-form" novalidate>${csrf(ctx)}
+        ${input({ name: 'name', label: 'Name', value: typeof view.values?.name === 'string' ? view.values.name : '', required: true, error: view.errors?.name })}
+        ${input({ name: 'email', label: 'Email', type: 'email', value: typeof view.values?.email === 'string' ? view.values.email : '', required: true, error: view.errors?.email })}
+        ${checkboxes({ name: 'track_ids', label: 'Tracks this judge covers', values: Array.isArray(chosen) ? chosen : chosen ? [chosen] : [], options: trackOptions, hint: 'None ticked means every track. Auto-assignment only gives a judge projects in their tracks.', error: view.errors?.track_ids })}
+        ${button('Invite judge')}
+      </form>
+      <p class="hint">A judge cannot be on a team in this event, and cannot also organize it.</p>`)}
+  </aside>
+</div>`, { lead: 'Who judges, and which tracks they cover.' });
+}
+
+// Assignments ------------------------------------------------------------------------------
+
+export interface AssignmentsView {
+  event: EventRow;
+  assignments: AssignmentView[];
+  projects: (ProjectRow & { team_name: string; track_name: string | null; reviews: number; assigned: number })[];
+  judges: { id: string; name: string }[];
+  shortfalls?: { title: string; have: number; missing: number; reason: string }[] | null;
+  created?: number | null;
+  errors?: Record<string, string>;
+}
+
+export function assignmentsPage(ctx: Ctx, view: AssignmentsView): SafeHtml {
+  const { event } = view;
+  const live = view.projects.filter((p) => p.status === 'submitted' && !p.superseded_by);
+  const byProject = new Map<string, AssignmentView[]>();
+  for (const a of view.assignments) byProject.set(a.project_id, [...(byProject.get(a.project_id) ?? []), a]);
+  const short = live.filter((p) => p.assigned < event.reviews_per_project).length;
+  const nothingToAssign = live.length === 0
+    ? 'Nothing to assign yet: no project has been submitted.'
+    : view.judges.length === 0
+      ? html`Invite judges first, on the <a href="/organize/${event.slug}/judges">Judges</a> tab.`
+      : null;
+  return organizerPage(ctx, event, 'assignments', 'Assignments', html`
+${view.created !== null && view.created !== undefined ? notice(view.shortfalls?.length ? 'warn' : 'success', html`Created ${view.created} assignment(s).${view.shortfalls?.length ? html` ${view.shortfalls.length} project(s) are still short: <ul>${view.shortfalls.map((s) => html`<li>${s.title}: ${s.have} of ${event.reviews_per_project}, ${s.reason}</li>`)}</ul>` : ''}`, 'Auto-assign finished.') : ''}
+${formErrors(view.errors)}
+<div class="two-col wide-left">
+  <div>
+    ${section('Coverage', html`<div class="table-wrap"><table class="data compact">
+      <thead><tr><th scope="col">Project</th><th scope="col">Track</th><th scope="col" class="n">Reviews</th><th scope="col">Judges</th></tr></thead>
+      <tbody>${live.map((p) => html`<tr>
+        <td><a href="/projects/${p.id}">${p.title}</a> <code class="muted">${p.id}</code></td><td>${p.track_name ?? ''}</td>
+        <td class="n">${p.reviews}/${p.assigned}${p.assigned < event.reviews_per_project ? html` ${pill(`needs ${event.reviews_per_project - p.assigned}`, 'warn')}` : ''}</td>
+        <td><ul class="judge-chips">${(byProject.get(p.id) ?? []).map((a) => html`<li class="${cx('chip', a.review_status === 'submitted' && 'chip-done', a.review_status === 'draft' && 'chip-draft')}">
+          <a href="/judge/reviews/${a.id}">${a.judge_name}</a>${a.source !== 'fixture' ? html` <span class="muted">${a.source}</span>` : ''}
+          ${a.review_status !== 'submitted' ? actionForm(ctx, `/organize/${event.slug}/assignments/${a.id}/remove`, '×', { small: true, variant: 'ghost' }) : ''}</li>`)}</ul></td>
+      </tr>`)}</tbody></table></div>`, { lead: `Submitted reviews / assigned judges, per project. Target: ${event.reviews_per_project}.` })}
+  </div>
+  <aside>
+    ${section('Auto-assign', html`<p>${short ? `${short} project(s) have fewer than ${event.reviews_per_project} judges.` : 'Every project has enough judges.'} Auto-assign fills the gaps: each judge only gets projects in their tracks, never their own team’s, and the least-loaded eligible judge takes each slot. Existing assignments are kept.</p>
+      ${nothingToAssign ? html`<p class="hint">${nothingToAssign}</p>` : actionForm(ctx, `/organize/${event.slug}/assignments/auto`, 'Fill gaps automatically', { variant: 'primary' })}`)}
+    ${section('Assign by hand', nothingToAssign ? html`<p class="hint">${nothingToAssign}</p>` : html`<form method="post" action="/organize/${event.slug}/assignments" class="stack-form">${csrf(ctx)}
+      ${select({ name: 'project_id', label: 'Project', blank: 'Choose a project', options: live.map((p) => ({ value: p.id, label: `${p.title} (${p.id})` })), error: view.errors?.project_id })}
+      ${select({ name: 'judge_id', label: 'Judge', blank: 'Choose a judge', options: view.judges.map((j) => ({ value: j.id, label: j.name })), error: view.errors?.judge_id })}
+      ${button('Assign', { variant: 'secondary' })}</form>`)}
+  </aside>
+</div>`, { lead: 'Who reviews what. Only unfinished assignments can be removed.' });
+}
+
+// Projects and duplicates ---------------------------------------------------------------
+
