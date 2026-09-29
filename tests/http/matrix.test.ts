@@ -47,11 +47,14 @@ describe('authorization matrix', () => {
     [`/events/${S}/results`, { anon: 200, participant: 200, judge_a: 200, judge_b: 200, organizer: 200 }],
   ];
 
+  // One test per cell, so a failure names the exact route and role.
   for (const [path, expected] of gets) {
-    test(`GET ${path}`, async () => {
-      const url = path.replace('OWN', ownReview).replace('OTHER', otherReview);
-      for (const who of WHO) assert.equal((await client(who).get(url)).status, expected[who], `${who} → ${url}`);
-    });
+    for (const who of WHO) {
+      test(`GET ${path} as ${who} → ${expected[who]}`, async () => {
+        const url = path.replace('OWN', ownReview).replace('OTHER', otherReview);
+        assert.equal((await client(who).get(url)).status, expected[who], `${who} → ${url}`);
+      });
+    }
   }
 
   const posts: [string, unknown, Partial<Record<Who, number>>][] = [
@@ -68,12 +71,12 @@ describe('authorization matrix', () => {
   ];
 
   for (const [path, body, expected] of posts) {
-    test(`POST ${path}`, async () => {
-      const url = path.replace('OTHER', otherReview);
-      for (const [who, status] of Object.entries(expected)) {
+    for (const [who, status] of Object.entries(expected)) {
+      test(`POST ${path} as ${who} → ${status}`, async () => {
+        const url = path.replace('OTHER', otherReview);
         assert.equal((await client(who as Who).postJson(url, body)).status, status, `${who} → ${url}`);
-      }
-    });
+      });
+    }
   }
 
   test('nothing in the matrix changed any data', () => {
