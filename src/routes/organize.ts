@@ -114,4 +114,71 @@ export const organizeRoutes: RouteModule = (router, { store, config }) => {
     await act(ctx, (body) => addOrganizer(store, ctx.actor, event, typeof body.email === 'string' ? body.email : ''), 'Organizer added.', `/organize/${event.slug}/settings`, (errors) =>
       renderSettings(ctx, event, { errors }, 422));
   });
+
+  // Rubric.
+  router.get('/organize/:slug/rubric', (ctx) => {
+    const event = organizerEvent(ctx, 'open the rubric');
+    ctx.html(rubricPage(ctx, event, listCriteria(store, event.id), rubricLocked(store, event.id)));
+  });
+
+  router.post('/organize/:slug/rubric', async (ctx) => {
+    const event = getEvent(store, ctx.params.slug as string);
+    await act(ctx, (body) => saveRubric(store, ctx.actor, event, body), 'Rubric saved.', `/organize/${event.slug}/rubric`, (errors) =>
+      ctx.html(rubricPage(ctx, event, listCriteria(store, event.id), rubricLocked(store, event.id), errors), 422));
+  });
+
+  // Judges.
+  router.get('/organize/:slug/judges', (ctx) => {
+    const event = organizerEvent(ctx, 'open the judge list');
+    ctx.html(judgesPage(ctx, { event, judges: listJudges(store, event.id), tracks: listTracks(store, event.id) }));
+  });
+
+  router.post('/organize/:slug/judges', async (ctx) => {
+    const event = getEvent(store, ctx.params.slug as string);
+    const body = await ctx.body();
+    try {
+      const { user, token } = inviteJudge(store, ctx.actor, event, body);
+      const url = `${config.publicUrl}/judge-invite/${token}`;
+      if (ctx.wantsJson) return ctx.json({ judge: { id: user.id, email: user.email }, invite_url: url }, 201);
+      ctx.html(judgesPage(ctx, { event, judges: listJudges(store, event.id), tracks: listTracks(store, event.id), inviteLink: { email: user.email, url } }), 201);
+    } catch (error) {
+      if (!(error instanceof ValidationError) || ctx.wantsJson) throw error;
+      ctx.html(judgesPage(ctx, { event, judges: listJudges(store, event.id), tracks: listTracks(store, event.id), errors: error.fields, values: body as Record<string, string | string[]> }), 422);
+    }
+  });
+
+  router.post('/organize/:slug/judges/:id/tracks', async (ctx) => {
+    const event = getEvent(store, ctx.params.slug as string);
+    setJudgeTracks(store, ctx.actor, event, ctx.params.id as string, await ctx.body());
+    ctx.flash('success', 'Tracks updated.');
+    ctx.redirect(`/organize/${event.slug}/judges`);
+  });
+
+  router.post('/organize/:slug/judges/:id/remove', (ctx) => {
+    const event = getEvent(store, ctx.params.slug as string);
+    removeJudge(store, ctx.actor, event, ctx.params.id as string);
+    ctx.flash('success', 'Judge removed.');
+    ctx.redirect(`/organize/${event.slug}/judges`);
+  });
+
+  // Assignments.
+  const renderAssignments = (ctx: Ctx, event: EventRow, extra: { created?: number; shortfalls?: { title: string; have: number; missing: number; reason: string }[]; errors?: Record<string, string> } = {}, status = 200) =>
+    ctx.html(assignmentsPage(ctx, {
+      event,
+      assignments: listAssignments(store, event.id),
+      projects: eventProjects(store, event.id),
+      judges: listJudges(store, event.id).map((j) => ({ id: j.id, name: j.name })),
+      created: extra.created ?? null,
+      shortfalls: extra.shortfalls ?? null,
+      errors: extra.errors,
+    }), status);
+
+  router.get('/organize/:slug/assignments', (ctx) => renderAssignments(ctx, organizerEvent(ctx, 'open assignments')));
+
+  router.post('/organize/:slug/assignments/auto', (ctx) => {
+    const event = getEvent(store, ctx.params.slug as string);
+    const result = autoAssign(store, ctx.actor, event);
+    if (ctx.wantsJson) return ctx.json(result);
+    renderAssignments(ctx, event, result);
+  });
 };
