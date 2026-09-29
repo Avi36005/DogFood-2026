@@ -181,4 +181,61 @@ export const organizeRoutes: RouteModule = (router, { store, config }) => {
     if (ctx.wantsJson) return ctx.json(result);
     renderAssignments(ctx, event, result);
   });
+
+  router.post('/organize/:slug/assignments', async (ctx) => {
+    const event = getEvent(store, ctx.params.slug as string);
+    await act(ctx, (body) => assignManually(store, ctx.actor, event, body), 'Assigned.', `/organize/${event.slug}/assignments`, (errors) => renderAssignments(ctx, event, { errors }, 422));
+  });
+
+  router.post('/organize/:slug/assignments/:id/remove', (ctx) => {
+    const event = getEvent(store, ctx.params.slug as string);
+    unassign(store, ctx.actor, event, ctx.params.id as string);
+    ctx.flash('success', 'Assignment removed.');
+    ctx.redirect(`/organize/${event.slug}/assignments`);
+  });
+
+  // Projects and duplicates.
+  router.get('/organize/:slug/projects', (ctx) => {
+    const event = organizerEvent(ctx, 'open the project list');
+    ctx.html(projectsAdminPage(ctx, event, eventProjects(store, event.id), duplicateGroups(store, event.id)));
+  });
+
+  router.post('/organize/:slug/projects/:id/count', (ctx) => {
+    const event = getEvent(store, ctx.params.slug as string);
+    chooseLiveSubmission(store, ctx.actor, event, ctx.params.id as string);
+    ctx.flash('success', `${ctx.params.id} now counts for its team.`);
+    ctx.redirect(`/organize/${event.slug}/projects#duplicates`);
+  });
+
+  // Results.
+  router.get('/organize/:slug/results', (ctx) => {
+    const event = organizerEvent(ctx, 'preview the results');
+    ctx.html(resultsAdminPage(ctx, event, computeStandings(store, event), listSnapshots(store, event.id)));
+  });
+
+  router.post('/organize/:slug/results/publish', (ctx) => {
+    const event = getEvent(store, ctx.params.slug as string);
+    const id = publishResults(store, ctx.actor, event);
+    if (ctx.wantsJson) return ctx.json({ snapshot: id });
+    ctx.flash('success', 'Results published. Judging is closed.');
+    ctx.redirect(`/organize/${event.slug}/results`);
+  });
+
+  router.post('/organize/:slug/results/unpublish', (ctx) => {
+    const event = getEvent(store, ctx.params.slug as string);
+    unpublishResults(store, ctx.actor, event);
+    ctx.flash('info', 'Results withdrawn from public view.');
+    ctx.redirect(`/organize/${event.slug}/results`);
+  });
+
+  // Audit and export.
+  router.get('/organize/:slug/audit', (ctx) => {
+    const event = organizerEvent(ctx, 'read the audit trail');
+    const action = ctx.query('action');
+    const before = Number(ctx.query('before')) || undefined;
+    const rows = listAudit(store, event.id, { action: action ?? undefined, before, limit: 100 });
+    ctx.html(auditPage(ctx, event, rows, auditActions(store, event.id), action, rows.length === 100 ? (rows.at(-1)?.id ?? null) : null));
+  });
+
+  router.get('/organize/:slug/export', (ctx) => ctx.html(exportPage(ctx, organizerEvent(ctx, 'open exports'))));
 };
