@@ -1,4 +1,7 @@
-import type { AuditRow } from '../domain/audit.ts';
+import type { AuditRow, ChainReport } from '../domain/audit.ts';
+import type { CommitmentStatus } from '../domain/commitment.ts';
+import type { PairwiseSummary } from '../domain/compare.ts';
+import { pairwiseSection } from './compare.ts';
 import { phaseOf } from '../domain/events.ts';
 import { EXPORT_DESCRIPTIONS, EXPORT_KINDS } from '../domain/exports.ts';
 import type { AssignmentView } from '../domain/judging.ts';
@@ -13,7 +16,7 @@ import { cx, html, type Renderable, type SafeHtml } from './html.ts';
 import { organizerTabs, page } from './layout.ts';
 import { phasePill } from './public.ts';
 
-function organizerPage(ctx: Ctx, event: EventRow, tab: string, title: string, body: Renderable, options: { lead?: Renderable; actions?: Renderable } = {}): SafeHtml {
+export function organizerPage(ctx: Ctx, event: EventRow, tab: string, title: string, body: Renderable, options: { lead?: Renderable; actions?: Renderable } = {}): SafeHtml {
   return page(ctx, {
     title: `${title} · ${event.name}`,
     nav: 'organize',
@@ -333,9 +336,10 @@ ${section(`All projects (${projects.length})`, html`<div class="table-wrap"><tab
 
 // Results ------------------------------------------------------------------------------------
 
-export function resultsAdminPage(ctx: Ctx, event: EventRow, standings: Standings, snapshots: Snapshot[]): SafeHtml {
+export function resultsAdminPage(ctx: Ctx, event: EventRow, standings: Standings, snapshots: Snapshot[], commitment: CommitmentStatus | null = null, pairwise: PairwiseSummary | null = null): SafeHtml {
   const phase = phaseOf(event, ctx.now);
   const ranked = standings.standings.filter((s) => s.rank !== null);
+  const prizePlaces = standings.uncertainty?.prizePlaces ?? 3;
   const moves = (s: Standings['standings'][number]) => {
     if (s.rank === null || s.raw_rank === null || s.rank === s.raw_rank) return html`<span class="muted">–</span>`;
     const delta = s.raw_rank - s.rank;
@@ -356,18 +360,55 @@ ${event.results_published_at ? notice('success', html`Published ${when(event.res
       ? html`${confirmForm(ctx, `/organize/${event.slug}/results/publish`, 'Publish again with current data', 'Creates a new snapshot from the reviews as they are now. The previous snapshot is kept and marked superseded.', 'Yes, republish')} ${confirmForm(ctx, `/organize/${event.slug}/results/unpublish`, 'Withdraw results', 'The public results page goes back to “not published”. Snapshots are kept.', 'Yes, withdraw', 'danger')}`
       : confirmForm(ctx, `/organize/${event.slug}/results/publish`, 'Publish results', html`Freezes this ranking with its method (${standings.method}, λ = ${standings.lambda}) and weights, closes judging, and shows the results publicly. You can republish later; every snapshot is kept.`, 'Yes, publish')}
   ${linkButton(`/api/export.csv?event=${event.slug}&kind=results`, 'Download CSV')}
+  ${event.results_published_at ? html`${linkButton(`/organize/${event.slug}/results/capsule.html`, 'Download signed results capsule')} ${linkButton(`/events/${event.slug}/results.json`, 'Signed JSON', 'ghost')}` : ''}
 </div>
 ${section('Ranking preview', html`<div class="table-wrap"><table class="data compact">
-  <thead><tr><th scope="col">Rank</th><th scope="col">Project</th><th scope="col">Track</th><th scope="col" class="n">Normalized</th><th scope="col" class="n">Raw mean</th><th scope="col">vs raw</th><th scope="col" class="n">Reviews</th></tr></thead>
+  <thead><tr><th scope="col">Rank</th><th scope="col">Project</th><th scope="col">Track</th><th scope="col" class="n">Normalized</th><th scope="col" class="n">Raw mean</th><th scope="col">vs raw</th><th scope="col" class="n">Likely place (90%)</th><th scope="col" class="n">Top ${prizePlaces}</th><th scope="col" class="n">Reviews</th></tr></thead>
   <tbody>${standings.standings.map((s) => html`<tr>
     <td class="rank">${s.rank ?? '–'}</td><td><a href="/projects/${s.project_id}">${s.title}</a>${s.low_coverage ? html` ${pill(s.review_count === 0 ? 'no reviews' : 'few reviews', 'warn')}` : ''}</td><td>${s.track_name ?? ''}</td>
-    <td class="n">${num(s.score, 3)}</td><td class="n">${num(s.raw_mean, 3)}</td><td>${moves(s)}</td><td class="n">${s.review_count}</td></tr>`)}</tbody>
+    <td class="n">${num(s.score, 3)}</td><td class="n">${num(s.raw_mean, 3)}</td><td>${moves(s)}</td><td class="n">${placeRange(s.rank_lo, s.rank_hi)}</td><td class="n">${share(s.podium_share)}</td><td class="n">${s.review_count}</td></tr>`)}</tbody>
 </table></div>`, { lead: html`Rubric weights: ${standings.weights.map((w) => `${w.name} ${Math.round(w.share * 100)}%`).join(', ')}. Normalized = μ + a<sub>p</sub>, the average with each judge’s offset removed.` })}
+${certaintySection(standings, commitment)}
+${pairwiseSection(pairwise)}
 ${section('Judge offsets', html`<div class="table-wrap"><table class="data compact">
   <thead><tr><th scope="col">Judge</th><th scope="col" class="n">Reviews</th><th scope="col" class="n">Mean given</th><th scope="col" class="n">Offset b<sub>j</sub></th><th scope="col">Flags</th></tr></thead>
   <tbody>${standings.judges.map((j) => html`<tr><td>${j.name} <code class="muted">${j.judge_id}</code></td><td class="n">${j.review_count}</td><td class="n">${num(j.mean_given, 2)}</td><td class="n">${signed(j.offset, 3)}</td><td>${flagPills(j.flags)}</td></tr>`)}</tbody>
 </table></div>`, { lead: html`Negative means harsher than the panel, positive more generous. Offsets are shrunk toward zero (λ = ${standings.lambda}), so judges with few reviews stay close to 0. See <a href="/about#normalization">the method</a>.` })}
 ${snapshots.length ? section('Published snapshots', html`<ul class="row-list">${snapshots.map((s) => html`<li><span><code>${s.id}</code> ${when(s.published_at, ctx.now)} by ${s.published_by_name ?? 'unknown'} · ${s.review_count} reviews · ${s.method}, λ ${s.lambda}</span>${s.superseded_at ? pill('superseded', 'neutral') : pill('current', 'success')}</li>`)}</ul>`) : ''}`, { lead: 'Normalized ranking, raw means beside it, and the judge offsets that separate them.' });
+}
+
+export function placeRange(lo: number | null, hi: number | null): Renderable {
+  if (lo === null || hi === null) return html`<span class="muted">–</span>`;
+  return lo === hi ? String(lo) : `${lo}–${hi}`;
+}
+
+export function share(value: number | null): Renderable {
+  return value === null ? html`<span class="muted">–</span>` : `${Math.round(value * 100)}%`;
+}
+
+/** Stability, the prize line and the method commitment: whether the ranking deserves the podium it shows. */
+function certaintySection(standings: Standings, commitment: CommitmentStatus | null): SafeHtml {
+  const u = standings.uncertainty;
+  if (!u) return html``;
+  const title = new Map(standings.standings.map((s) => [s.project_id, s.title]));
+  const judge = new Map(standings.judges.map((j) => [j.judge_id, j.name]));
+  const st = u.stability;
+  const influential = st.influential.map((i) => html`<li>Without <strong>${judge.get(i.judge) ?? i.judge}</strong> <code class="muted">${i.judge}</code>: ${i.changesWinner ? html`first place goes to ${title.get(i.winner ?? '') ?? '–'}` : 'first place holds'}${i.changesPodium ? html`, and the top ${u.prizePlaces} become ${i.podium.map((p) => title.get(p) ?? p).join(', ')}` : ''}.</li>`);
+  return section('How sure is this ranking?', html`
+<p>First place (${title.get(st.winner ?? '') ?? '–'}) holds in <strong>${st.winnerHolds} of ${st.refits}</strong> refits that each leave one judge out; the top ${u.prizePlaces} hold in <strong>${st.podiumHolds} of ${st.refits}</strong>. One review's noise is about ${u.sigma.toFixed(2)} points.</p>
+${influential.length ? html`<details><summary>${influential.length} judge${influential.length === 1 ? '' : 's'} whose removal changes the podium</summary><ul>${influential}</ul></details>` : html`<p>No single judge decides the podium.</p>`}
+<div class="table-wrap"><table class="data compact">
+  <thead><tr><th scope="col">Places</th><th scope="col">Ahead</th><th scope="col">Behind</th><th scope="col" class="n">Gap</th><th scope="col" class="n">Order kept</th><th scope="col">Reading</th><th scope="col" class="n">Reviews each to separate</th></tr></thead>
+  <tbody>${u.separations.map((s) => html`<tr><td>${s.place} and ${s.place + 1}</td><td>${title.get(s.above) ?? s.above}</td><td>${title.get(s.below) ?? s.below}</td><td class="n">${s.gap.toFixed(3)}</td><td class="n">${Math.round(s.orderShare * 100)}%</td>
+    <td>${s.separated ? pill('separated', 'success') : pill('statistical tie', 'warn')}</td>
+    <td class="n">${s.reviewsEach === null ? html`<span class="muted">a true tie</span>` : s.reviewsEach === 0 ? '0' : s.reviewsEach > 10 ? html`${s.reviewsEach} <span class="muted">(not practical)</span>` : String(s.reviewsEach)}</td></tr>`)}</tbody>
+</table></div>
+<p>${commitment
+    ? commitment.unchanged
+      ? html`${pill('method unchanged', 'success')} The method, λ, scale and weights were fixed ${formatUtc(commitment.committedAt)} when the first score arrived (fingerprint <code>${commitment.committedHash.slice(0, 12)}</code>), and still match.`
+      : html`${pill('method changed', 'warn')} The configuration no longer matches the one fixed when scoring began (fingerprint <code>${commitment.committedHash.slice(0, 12)}</code>); ${commitment.laterRubricChanges} rubric edit(s) since then are on the audit trail. Publishing will say so.`
+    : html`<span class="muted">The method is fixed, and fingerprinted, when the first score arrives.</span>`}</p>`,
+  { lead: html`90% intervals from ${u.replicates} seeded simulations that keep this event's judge–project layout. Two projects whose order flips often are a statistical tie, however the table sorts them. See <a href="/about#normalization">the method</a>.` });
 }
 
 // Audit ---------------------------------------------------------------------------------------
@@ -380,8 +421,9 @@ export function auditList(ctx: Ctx, rows: AuditRow[]): SafeHtml {
   </li>`)}</ol>`;
 }
 
-export function auditPage(ctx: Ctx, event: EventRow, rows: AuditRow[], actions: string[], filter: string | null, nextBefore: number | null): SafeHtml {
+export function auditPage(ctx: Ctx, event: EventRow, rows: AuditRow[], actions: string[], filter: string | null, nextBefore: number | null, chain: ChainReport | null = null): SafeHtml {
   return organizerPage(ctx, event, 'audit', 'Audit trail', html`
+${chain ? chainNotice(chain) : ''}
 <form method="get" class="filters compact" action="/organize/${event.slug}/audit">
   ${select({ name: 'action', label: 'Show', value: filter, blank: 'Everything', options: [{ value: 'access.denied', label: 'Refused access attempts' }, ...actions.filter((a) => a !== 'access.denied').map((a) => ({ value: a, label: a }))] })}
   <div class="filter-actions">${button('Filter', { variant: 'secondary' })} ${linkButton(`/api/export.csv?event=${event.slug}&kind=audit`, 'Download CSV', 'ghost')}</div>
@@ -389,6 +431,13 @@ export function auditPage(ctx: Ctx, event: EventRow, rows: AuditRow[], actions: 
 ${rows.length ? auditList(ctx, rows) : empty('Nothing here', 'No entries match this filter.')}
 ${nextBefore ? html`<p>${linkButton(`/organize/${event.slug}/audit?${new URLSearchParams({ ...(filter ? { action: filter } : {}), before: String(nextBefore) })}`, 'Older entries')}</p>` : ''}`,
   { lead: 'Every change and every refused attempt, newest first. Append-only: the database rejects edits and deletions of this log.' });
+}
+
+function chainNotice(chain: ChainReport): SafeHtml {
+  if (!chain.ok && chain.broken) {
+    return notice('error', html`Entry #${chain.broken.id} does not verify: ${chain.broken.reason}. Entries before it are intact. Compare with a published results capsule, which quotes the chain's head at publication.`, 'The audit chain is broken.');
+  }
+  return notice('success', html`All ${chain.verified} chained entries verify${chain.unchained ? html` (${chain.unchained} older entries predate the chain)` : ''}. Head: #${chain.head?.id ?? '–'} <code>${chain.head?.hash.slice(0, 16) ?? ''}…</code>. Every entry carries a SHA-256 of the one before it, so an edit to the database file breaks every later hash.`, 'Tamper-evident.');
 }
 
 // Export --------------------------------------------------------------------------------------

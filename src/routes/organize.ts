@@ -1,5 +1,8 @@
 import { myEventRoles, requireOrganizer } from '../domain/access.ts';
-import { auditActions, listAudit } from '../domain/audit.ts';
+import { auditActions, listAudit, verifyChain } from '../domain/audit.ts';
+import { commitmentStatus } from '../domain/commitment.ts';
+import { pairwiseSummary } from '../domain/compare.ts';
+import { currentEvidence } from '../domain/evidence.ts';
 import { addOrganizer, addPrize, addTrack, closeSubmissionsNow, getEvent, listCriteria, listOrganizers, listPrizes, listTracks, removePrize, removeTrack, updateEvent } from '../domain/events.ts';
 import { assignManually, autoAssign, inviteJudge, listAssignments, listJudges, removeJudge, setJudgeTracks, unassign } from '../domain/judging.ts';
 import { eventProgress } from '../domain/progress.ts';
@@ -9,8 +12,9 @@ import { rubricLocked, saveRubric } from '../domain/rubric.ts';
 import type { EventRow } from '../domain/types.ts';
 import type { RouteModule } from '../http/app.ts';
 import type { Ctx } from '../http/context.ts';
-import { unauthorized, ValidationError } from '../util/errors.ts';
+import { conflict, unauthorized, ValidationError } from '../util/errors.ts';
 import type { Body } from '../util/form.ts';
+import { capsuleFileName, resultsCapsule } from '../views/capsule.ts';
 import { assignmentsPage, auditPage, exportPage, judgesPage, organizeHomePage, overviewPage, progressFragment, projectsAdminPage, resultsAdminPage, rubricPage, settingsPage, type OverviewView } from '../views/organize.ts';
 
 export const organizeRoutes: RouteModule = (router, { store, config }) => {
@@ -210,7 +214,17 @@ export const organizeRoutes: RouteModule = (router, { store, config }) => {
   // Results.
   router.get('/organize/:slug/results', (ctx) => {
     const event = organizerEvent(ctx, 'preview the results');
-    ctx.html(resultsAdminPage(ctx, event, computeStandings(store, event), listSnapshots(store, event.id)));
+    ctx.html(resultsAdminPage(ctx, event, computeStandings(store, event, { uncertainty: true }), listSnapshots(store, event.id), commitmentStatus(store, event.id), pairwiseSummary(store, event)));
+  });
+
+  // The self-verifying results file: signed document, inputs and an offline checker in one page.
+  router.get('/organize/:slug/results/capsule.html', (ctx) => {
+    const event = organizerEvent(ctx, 'download the results capsule');
+    const evidence = currentEvidence(store, event);
+    if (!evidence) throw conflict('Publish the results first: the capsule holds the signed, published snapshot.');
+    ctx.send(200, 'text/html; charset=utf-8', resultsCapsule(evidence), {
+      'Content-Disposition': `attachment; filename="${capsuleFileName(JSON.parse(evidence.documentText)).replace(/[^\w.-]/g, '_')}"`,
+    });
   });
 
   router.post('/organize/:slug/results/publish', (ctx) => {
@@ -234,7 +248,7 @@ export const organizeRoutes: RouteModule = (router, { store, config }) => {
     const action = ctx.query('action');
     const before = Number(ctx.query('before')) || undefined;
     const rows = listAudit(store, event.id, { action: action ?? undefined, before, limit: 100 });
-    ctx.html(auditPage(ctx, event, rows, auditActions(store, event.id), action, rows.length === 100 ? (rows.at(-1)?.id ?? null) : null));
+    ctx.html(auditPage(ctx, event, rows, auditActions(store, event.id), action, rows.length === 100 ? (rows.at(-1)?.id ?? null) : null, verifyChain(store)));
   });
 
   router.get('/organize/:slug/export', (ctx) => ctx.html(exportPage(ctx, organizerEvent(ctx, 'open exports'))));

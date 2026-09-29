@@ -58,7 +58,7 @@ describe('the DOGFOOD acceptance behaviours', () => {
     assert.equal(reply.status, 200);
     assert.match(reply.headers.get('content-type') ?? '', /text\/csv/);
     const [header, first] = reply.text.split('\r\n');
-    assert.equal(header, 'rank,project_id,title,team,track,reviews,raw_mean,normalized_score,raw_rank,low_coverage,status');
+    assert.equal(header, 'rank,project_id,title,team,track,reviews,raw_mean,normalized_score,raw_rank,low_coverage,rank_lo_90,rank_hi_90,top3_share,status');
     assert.match(first ?? '', /^1,prj_34,Iron Switch,/);
   });
 
