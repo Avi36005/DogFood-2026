@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Forgeboard embed — host page test</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 32px; background: #f6f7f9; color: #14181d; }
+    main { max-width: 900px; margin: 0 auto; }
+    h1 { font-size: 22px; }
+    p  { color: #566; font-size: 14px; line-height: 1.6; }
+    code { background: #e9edf1; padding: 2px 5px; border-radius: 4px; font-size: 13px; }
+    .frame { margin-top: 24px; border: 1px solid #d3dae1; border-radius: 12px; overflow: hidden; background: #fff; }
+    iframe { display: block; width: 100%; height: 620px; border: 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Embedding a Forgeboard gallery</h1>
+    <p>
+      This file is deliberately <strong>not</strong> served by Forgeboard. Open it straight from disk
+      (<code>file://</code>) or from any other local web server, so the embed is exercised as a genuine
+      third-party host rather than same-origin.
+    </p>
+    <p>Paste this snippet into your own page:</p>
+    <pre><code>&lt;iframe
+  src="http://localhost:3000/embed/autumn-build-2026?limit=12"
+  title="Project gallery"
+  loading="lazy"
+  style="width:100%;height:620px;border:0"
+  referrerpolicy="no-referrer"
+  sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"&gt;
+&lt;/iframe&gt;</code></pre>
+
+    <div class="frame">
+      <iframe
+        src="http://localhost:3000/embed/autumn-build-2026?limit=12"
+        title="Project gallery"
+        loading="lazy"
+        referrerpolicy="no-referrer"
+        sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"></iframe>
+    </div>
+
+    <p>
+      The embed shows submitted projects only. Drafts, scores, judge identities and vote totals are not
+      in the payload at all, so there is nothing private to leak through the frame.
+    </p>
+  </main>
+</body>
+</html>

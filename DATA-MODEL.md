@@ -1,154 +1,312 @@
 # Data model
 
-One SQLite database (`/data/forgeboard.db` in Docker), created by
-[`src/db/migrations/001_initial.sql`](src/db/migrations/001_initial.sql), which is the
-authoritative version of everything below. This page explains it.
+SQLite, `STRICT` tables, foreign keys on. The whole schema is one readable file:
+[`lib/db/schema.sql`](lib/db/schema.sql). This document explains the decisions
+behind it and how data gets in and out.
 
-**Conventions**
-- **Ids** are opaque text. Rows imported from `fixtures.json` keep their fixture ids (`evt_01`,
-  `prj_07`, `jdg_24`). New rows get a prefix and 12 random characters (`prj_k3v9x2m1qa7d`).
-- **Times** are UTC ISO 8601 strings with milliseconds, which sort correctly as text. Pages
-  show UTC with the zone written out.
-- **Every row that belongs to an event carries `event_id`.** Composite foreign keys use it, so
-  the database itself refuses a project in another event's track, or an assignment to someone
-  who is not a judge of that event.
-- **Raw data is never overwritten by derived data.** Criterion scores are stored, and weighted
-  and normalized scores are computed. Published results are separate, immutable snapshots.
+## Conventions
 
-## Tables
+- **Ids** are text, prefixed by kind: `usr_`, `evt_`, `prj_`, `asg_`, `rvw_`.
+  Self-describing in logs and in a CSV, and impossible to confuse across tables.
+  Generated from a base-36 timestamp plus 8 random characters, so they sort
+  roughly by creation without being guessable.
+- **Timestamps** are UTC ISO-8601 strings. SQLite has no date type; a sortable
+  lexicographic format is the honest choice. `events.timezone` is display only.
+- **`STRICT`** on every table, so a text column cannot quietly accept an
+  integer. Enumerations are `CHECK` constraints rather than convention.
+- **Booleans** are `INTEGER` constrained to `(0,1)`.
+- **Soft state** (`disabled_at`, `revoked_at`, `withdrawn_at`) is a nullable
+  timestamp rather than a flag, so "when" is never lost.
 
-```
-users ─┬─ sessions            events ─┬─ tracks ─── prizes
-       ├─ password_links              ├─ criteria
-       └─ event_roles ────────────────┤  (organizer | judge | participant)
-            │                         ├─ teams ─── team_members, team_invites
-            ├─ judge_tracks           ├─ projects ─── project_revisions
-            ├─ judge_invites          ├─ assignments ─── reviews ─── review_scores
-            └─ assignments            ├─ result_snapshots ─── result_rows, result_judge_offsets
-                                      └─ audit_log (no foreign keys: outlives what it describes)
-```
+## Entities
 
 ### Identity
 
-| Table | Purpose | Rules it carries |
-|---|---|---|
-| `users` | One account per email | Email unique (case-insensitive). `password_hash` is NULL until the person claims the account through a one-time link, which is how imported and invited people exist. `is_admin` is instance-wide |
-| `sessions` | Server-side sessions | Keyed by the **SHA-256 of the cookie value**; the cookie itself is never stored. `is_demo` marks the four fixed checker sessions |
-| `password_links` | One-time links to set a password (`setup`) or reset one (`reset`) | Hashed, expiring, single-use (`used_at`) |
-| `settings` | The generated CSRF signing secret | |
+**`users`** — `email_ci` is a lowercased uniqueness key beside the display
+`email`, so addresses are case-insensitive for login while preserving what the
+person typed. `password_hash` / `password_salt` are hex scrypt output.
+`global_role` is `admin` or `user` and confers no event powers by itself.
 
-### Events and roles
+**`sessions`** — server-side. Stores `token_hash` (SHA-256 of the cookie value),
+never the token. Revocation is a column, so disabling an account kills its
+sessions immediately.
 
-| Table | Purpose | Rules it carries |
-|---|---|---|
-| `events` | A hackathon: slug, name, texts, `submissions_open_at`, **`submissions_close_at`** (the deadline), `judging_close_at`, `results_published_at`, team size, reviews per project, score scale | `slug` unique and URL-safe. The opening time must come before the deadline, and the scale must be ordered. `source` is `created` or `fixture` |
-| `event_roles` | Who is what in which event | Primary key `(event, user, role)`. A visitor is the absence of a row |
-| `tracks` | Tracks per event | `UNIQUE (id, event_id)`, the target of composite foreign keys |
-| `prizes` | Prizes, optionally for one track | `(track_id, event_id)` must name a track of the same event |
+**`password_resets`** — local account recovery. One row per issued link:
+`token_hash` (never the token), who issued it (`created_by`, null when the
+operator issued it from the command line), an expiry an hour out, and `used_at`.
+Redeeming one sets the new password, marks every outstanding link for that
+account used, and revokes every session it had.
 
-### Teams and projects
+### Events
 
-| Table | Purpose | Rules it carries |
-|---|---|---|
-| `teams` | Teams per event | **Names are not unique.** The fixture has three pairs of different teams sharing a name, so uniqueness is a rule for new teams in the code, not a database invariant |
-| `team_members` | Membership | `UNIQUE (event_id, user_id)`: one team per person per event. `is_captain` marks the captain |
-| `team_invites` | Invite links | Hashed. Multi-use until expiry (14 days), replacement or a full team |
-| `projects` | Submissions: title, summary, description, track, three links, `status` (`draft` / `submitted` / `withdrawn`), `submitted_at`, **`superseded_by`**, `version` | A **partial unique index gives one live project per team** (`WHERE superseded_by IS NULL AND status <> 'withdrawn'`). `submitted` requires `submitted_at`. The track must belong to the same event. `version` supports optimistic concurrency |
-| `project_revisions` | A JSON snapshot of every save | **Append-only**: triggers reject `UPDATE` and `DELETE`. It answers "what did this team have at the deadline?" |
+**`events`** — the aggregate root. Four independent timestamps
+(`submissions_open_at`, `submissions_close_at`, `judging_open_at`,
+`judging_close_at`) rather than deriving windows from `status`, because an
+organizer routinely wants submissions closed while judging has not started.
+`reviews_per_project` and `max_team_size` are policy, configurable per event,
+not constants in code. `version` supports optimistic concurrency.
+
+**`tracks`**, **`prizes`**, **`custom_questions`** — all keyed to the event and
+cascade-deleted with it. A prize may be scoped to a track or to the whole event.
+Questions carry a `kind` so the form can render the right control, and
+`options_json` for select types.
+
+**`event_roles`** — the authorization table.
+
+```sql
+CREATE UNIQUE INDEX ux_event_roles
+  ON event_roles(event_id, user_id, role, IFNULL(track_id,''));
+```
+
+A row is `(event, user, role[, track])`. A `judge` row with `track_id IS NULL`
+judges everything; with a track it is confined to that track. The `IFNULL` in
+the index is what makes "all tracks" and "this track" distinct grants rather
+than colliding on `NULL`, since SQLite treats `NULL`s as distinct in unique
+indexes.
+
+**Why not a `role` column on `users`?** Because roles are per event. The same
+person is an organizer here and a competitor there. Putting role on the user
+would force one instance per event, which defeats the point.
+
+### Teams
+
+**`teams`** — unique name within an event.
+**`team_members`** — unique `(team_id, user_id)`; `role` is `owner` or `member`.
+An owner cannot leave while others remain, which prevents orphaned teams.
+
+**`invitations`** — stores `token_hash`, never the token. Carries `expires_at`,
+`max_uses` and `uses`, so a link can be time-boxed and rate-limited rather than
+being a permanent key. Accepting runs in one transaction: seat check, insert,
+counter increment.
+
+### Submissions
+
+**`projects`** — one per team, enforced by `UNIQUE(team_id)`. The gallery,
+assignment and scoring all assume it, so it is a constraint rather than a habit.
+Carries the full field set the brief names: name, tagline, description,
+thumbnail, demo video URL, repository URL, live URL, track. `status` is
+`draft` / `submitted` / `withdrawn`.
+
+**`project_tags`** — a join table with `PRIMARY KEY (project_id, tag)`, not a
+comma-separated column, so filtering by tag is an index lookup.
+
+**`custom_answers`** — unique per `(project, question)`, upserted.
+
+**`submission_revisions`** — append-only JSON snapshot per submit, numbered per
+project. This is what lets an organizer answer "what was on file at the
+deadline?" after a team has kept editing.
+
+**`media_assets` / `project_media`** — tables exist with a `sha256` for
+deduplication; upload is **not wired up** in the interface. Declared honestly
+rather than removed, because the gallery schema anticipates it.
 
 ### Judging
 
-| Table | Purpose | Rules it carries |
-|---|---|---|
-| `criteria` | The rubric: key, name, description, relative weight | Weight between 0 and 100. `UNIQUE (event_id, key)` |
-| `judge_tracks` | Which tracks a judge covers | The foreign key `(event_id, judge_id, 'judge')` → `event_roles` requires the judge role, and removing the role removes the grants |
-| `judge_invites` | One-time judge invitations | Hashed, expiring, `accepted_at` |
-| `assignments` | Judge × project | **`UNIQUE (project_id, judge_id)`**: never twice. The judge must hold the judge role *in that event*, and the project must be in that event (both composite foreign keys). There is deliberately no cascade from the role, so a judge with reviews cannot vanish silently. `source` is `fixture`, `auto` or `manual` |
-| `reviews` | One per assignment: `draft` or `submitted`, comment | `submitted` requires `submitted_at` |
-| `review_scores` | Criterion × review → integer | Primary key `(review, criterion)`. **Triggers** refuse a criterion from another event and a value outside the event's scale |
+**`rubric_versions` / `criteria`** — rubrics are versioned, not edited in place.
+Publishing supersedes the previous version; reviews keep the
+`rubric_version_id` they were scored against. Without this, editing a weight
+mid-event would silently rewrite history.
 
-### Results and audit
+**`assignments`** — `UNIQUE(project_id, judge_user_id)`. `batch_label` records
+which generation run produced it. Revocation is a status plus a timestamp, so a
+withdrawn assignment stays visible in the audit rather than vanishing.
 
-| Table | Purpose | Rules it carries |
-|---|---|---|
-| `result_snapshots` | A published ranking: method, λ, weights (JSON), review count, who and when; the signed results document (exact text), its Ed25519 signature and public key, and the model's inputs (pseudonymized, JSON) | At most one current snapshot per event (a partial unique index). Older ones are kept with `superseded_at`. The inputs are never selected into public responses |
-| `result_rows` | Rank, normalized score, raw mean, review count, low-coverage flag, 90% rank interval (`rank_lo`, `rank_hi`) and top-three share per project | |
-| `result_judge_offsets` | Each judge's fitted offset in that snapshot | Makes a published ranking reproducible |
-| `audit_log` | Every change and every refused attempt: when, who (id and a readable label), event, action, subject, a one-sentence summary, JSON detail, IP, and `prev_hash`/`hash` | **Append-only** (triggers reject `UPDATE` and `DELETE`) and **hash-chained**: `hash` = SHA-256 of `prev_hash` and the entry's fields, so an edit made around the triggers shows. It has no foreign keys on purpose: the record must outlive what it describes |
+**`reviews`** — `UNIQUE(assignment_id)`: one review per assignment, which is
+what makes "one ballot per judge per project" a database fact.
+`raw_weighted` caches the weighted score at submit time so later rubric changes
+cannot retroactively alter a submitted score.
+
+**`criterion_scores`** — `UNIQUE(review_id, criterion_id)`, upserted as a judge
+works. `score` is `REAL` to allow non-integer scales later.
+
+### Results
+
+**`result_snapshots`** — immutable. Records `algorithm` and `params_json`, so a
+published ranking carries the parameters that produced it. Status is
+`computed` / `published` / `superseded`; publishing supersedes rather than
+overwrites.
+
+**`result_rows`** — per project per snapshot: `raw_mean`, `normalized_mean`,
+`rank`, `raw_rank`, `rank_delta`, `reviews_counted`, `rank_in_track`. Storing
+both rankings is what makes the normalization auditable after the fact.
 
 ### Community (T3)
 
-| Table | Purpose | Rules it carries |
-|---|---|---|
-| `vote_settings` | One per event with a community vote: window, access (`accounts` or `codes`), approvals per ballot, when the tally was published | `closes_at > opens_at`; `max_picks` 1–10 |
-| `voter_codes` | One-time voter codes, by batch | Stored only as SHA-256 hashes; `used_at` set once, in the ballot's transaction |
-| `ballots` | One per voter: account **or** code, time, keyed hashes of address and browser, void reason | Exactly one of account and code (a `CHECK`); **one per account per event** and **one per code** (partial unique indexes); voided only with a reason |
-| `ballot_picks` | The projects a ballot approves | **Final**: triggers reject `UPDATE` and `DELETE` |
-| `comments` | Comments on projects | 1–2,000 characters; hidden only with a reason and who hid it, never deleted |
-| `pairwise_votes` | Compare mode: which of two assigned projects a judge chose | **One per judge per unordered pair** (an expression index over `min`/`max` of the two ids); **final** (triggers) |
+**`voters`** — one row per distinguishable voter per event, with `kind` recording how much that
+identity is actually worth (`session`, `email`, `account`). Partial unique indexes keep one voter per
+account, per address and per browser cookie, without those columns colliding on `NULL`.
 
-JSON appears in exactly five places, each an immutable record rather than a data model:
-- `project_revisions.snapshot`
-- `result_snapshots.weights`, `result_snapshots.document` (the signed text) and `result_snapshots.inputs`
-- `audit_log.detail`
+**`vote_tokens`** — expiring, single-use possession proofs for email-gated voting. Hash stored, never
+the token. Delivery is the operator's channel; Forgeboard sends no mail.
 
-All five are checked with `json_valid`. Migration `002_evidence.sql` adds the chain, interval and
-signature columns with `ALTER TABLE … ADD COLUMN`, so an existing database upgrades in place;
-audit entries written before it are reported as unchained, never silently accepted.
+**`votes`** — the uniqueness that matters is partial:
+`UNIQUE(project_id, voter_id) WHERE retracted_at IS NULL AND invalidated_at IS NULL`. A retracted or
+invalidated vote stays in the table for the audit trail while freeing the slot, so history is never
+destroyed to allow a re-vote.
 
-## Rules the database enforces, whatever the code does
+**`comments`** — `status` is `visible`/`removed`. Removal is a status change plus a moderator, time and
+reason; the author's text is retained in the row and simply not returned to the browser.
 
-| Rule | How | Test |
-|---|---|---|
-| One live project per team (the duplicate case) | Partial unique index | `tests/unit/data.test.ts`: *a team cannot have two live projects* |
-| A judge scores a project at most once | `UNIQUE (project_id, judge_id)` | *the same judge cannot be assigned the same project twice* |
-| Only judges of that event are assigned | Composite FK to `event_roles(event, user, 'judge')` | *a judge cannot be assigned without holding the judge role* |
-| No cross-event references | Composite FKs on `(id, event_id)` | *a project cannot point at another event's track* |
-| Scores stay in the event's scale | Trigger on `review_scores` | *a score outside the event scale is rejected* |
-| The audit log and revision history are append-only | Triggers | *the audit log is append-only* |
-| A failed operation leaves nothing behind | One transaction per domain operation | *a transaction that fails leaves nothing behind* |
+### Stretch (T4)
 
-## The way in
+**`issued_records`** — signed participation records with their payload, signature and `key_id`, so a
+record remains verifiable after a key rotation reveals which key signed it.
 
-- **The DOGFOOD fixtures format** (`src/domain/fixtures.ts`), at first start
-  (`FORGEBOARD_SEED_FIXTURES=1`) or with `node src/cli.ts import <file>`.
-  1. **The whole file is validated first:** the shape, then every cross-reference (unknown team,
-     track or judge), a judge who is also on a team, a judge scoring a project twice, scores
-     outside 1–5, and inconsistent criteria sets. Every problem is listed.
-  2. **Then it is written in one transaction.** A bad file changes nothing.
-  3. **Importing the same event again is a no-op.**
+**`api_keys`** — hashed like sessions; a key carries no powers of its own, only its owner's.
 
-  The mapping:
-  - Judges become users with their fixture ids, plus the judge role and their tracks.
-  - Team members become users without passwords, who can claim their accounts with a link.
-  - Each score becomes an assignment plus a submitted review.
-  - The criteria become an equally weighted rubric on a 1–5 scale.
-  - A team with more than one project keeps the latest live and marks the rest replaced
-    (JUDGING.md §4).
-- **Accounts** can be created by sign-up, by invitation (judges), or by import.
+**`webhooks` / `webhook_deliveries`** — endpoint, signing secret, topic filter, plus per-delivery
+status, attempt count and last error, so failures are visible without reading a log file.
 
-## The way out
+### Audit
 
-- **CSV at every stage** (organizers; the **Export** tab or `GET /api/export.csv?event=<id>&kind=<kind>`):
+**`audit_events`** — append-only. Never updated or deleted by the application.
+`actor_label` is denormalised (`Name <email>`) so the trail stays readable after
+an account is removed. `outcome` is `ok` or `denied`, so refused access attempts
+are recorded alongside successful actions.
 
-  | Kind | Contents |
-  |---|---|
-  | `results` | The ranking with raw means, normalized scores and raw ranks |
-  | `reviews` | Every review with each criterion, the weighted score and the comment |
-  | `projects` | Every project, including drafts and replaced ones |
-  | `judges` | Tracks, progress, fitted offset and flags |
-  | `assignments` | Who reviews what, and how each assignment was made |
-  | `audit` | The event's full audit trail |
+### Governance
 
-  Files are RFC 4180, UTF-8, with CRLF line endings. Formula-like cells are neutralized.
-- **The whole database:** `node src/cli.ts backup <file>` writes a consistent copy while the
-  server runs. It is a plain SQLite file, readable by any SQLite tool, and every table is
-  described above.
-- **JSON:** `GET /api/events`, `/api/events/<id>`, `/api/projects` and the published results.
-  See `GET /api`.
+**`role_invitations`** — a single-person role grant, deliberately separate from
+the reusable team link in `invitations`. Carries the event, the role, the track
+scope, an optional `email_ci` that restricts who may accept, an expiry and a
+one-use `accepted_at`. The scope granted at acceptance is read from this row,
+so nothing the browser sends can widen it.
 
-## Migrations
+**`eligibility_decisions`** — append-only. Each row is one organizer decision
+(`disqualified` or `reinstated`) with its reason, actor and time. The current
+answer is denormalised onto `projects.disqualified_at` so every "still in the
+running" query can filter on one indexed column; the history explains it.
 
-Migrations are forward-only SQL files in `src/db/migrations/`. Each runs in its own
-transaction on start and is recorded in `schema_migrations`. Adding a feature means adding
-`002_….sql`; the shipped schema is never edited in place.
+**`team_member_history`** — written when somebody leaves a team. Judging
+conflicts are decided from current membership **or** this table, so leaving a
+team cannot turn a conflicted judge into an eligible one.
+
+## State machines
+
+### Event
+
+```
+draft ──▶ open ──▶ submissions_closed ──▶ judging ──▶ results_published
+  │         │            │  ▲                │  ▲            │
+  │         │            └──┘ (reopen)       └──┘ (pause)    │ (unpublish)
+  │         │                                      ▲─────────┘
+  └─────────┴──────────────────────────────────────┴──▶ archived
+```
+
+Transitions are validated by `canTransition()` against an explicit table.
+`draft → results_published` is refused. `archived` is terminal.
+
+### Project
+
+`draft → submitted` (validated, snapshotted) · `draft|submitted → withdrawn`.
+Editing after submit is allowed until the deadline and appends a revision.
+
+### Assignment / Review
+
+`pending → in_progress → submitted`, plus `revoked` from any state by an
+organizer. The review's own status is `draft → submitted`; submitting is
+one-way for a judge, reversible only by an organizer.
+
+### Result snapshot
+
+`computed → published → superseded`. Only one `published` per event.
+
+## Integrity constraints that matter
+
+| Constraint | Prevents |
+|---|---|
+| `UNIQUE(projects.team_id)` | A team fielding two entries |
+| `UNIQUE(assignments.project_id, judge_user_id)` | Double-assigning a judge |
+| `UNIQUE(reviews.assignment_id)` | Two ballots for one assignment |
+| `UNIQUE(criterion_scores.review_id, criterion_id)` | Duplicate criterion scores |
+| `UNIQUE(sessions.token_hash)`, `UNIQUE(invitations.token_hash)` | Token collision |
+| `UNIQUE(users.email_ci)` | Case-variant duplicate accounts |
+| `CHECK(status IN (...))` on every status column | Invalid states |
+| `CHECK(criteria.scale_max > scale_min)` | A scale with no range |
+| Conflict-of-interest check in `authz.ts` | A judge reviewing their own team |
+
+## Getting data out
+
+CSV from the organizer console, or `GET /api/events/:slug/export/:name`
+(same authorization as the pages — organizer only):
+
+`projects` · `teams` · `judges` · `assignments` · `reviews` ·
+`criterion-scores` · `results` · `audit`
+
+RFC 4180: CRLF endings, every value quoted, embedded quotes doubled. Values
+beginning `=`, `+`, `-` or `@` are prefixed with a single quote so a spreadsheet
+does not evaluate them as formulas — a real risk when project descriptions are
+attacker-controlled. Column headers are declared per export, so an export with
+no rows is still a valid, self-describing file.
+
+`criterion-scores.csv` plus `reviews.csv` contain everything needed to
+independently recompute a published ranking.
+
+## Getting data in
+
+Bulk import is **not implemented** — it is T4 work and is not claimed. The
+supported paths today are the interface and direct SQL against the file.
+
+## Backup and recovery
+
+The entire instance is two paths on the volume:
+
+```
+/data/forgeboard.db     the database (plus -wal and -shm while running)
+/data/uploads/          media, when upload is enabled
+```
+
+Back up with SQLite's own consistent-copy command rather than `cp`, which can
+catch a torn WAL:
+
+```bash
+sqlite3 /data/forgeboard.db ".backup '/backup/forgeboard-$(date +%F).db'"
+```
+
+Restore by stopping the container, replacing the file, and starting it.
+
+**Schema upgrades.** `migrate()` applies `schema.sql`, where every statement is
+`CREATE ... IF NOT EXISTS`, and then adds any column an older database is
+missing (`ADDED_COLUMNS` in `lib/db/client.ts`, checked against
+`PRAGMA table_info`). Both halves are idempotent and additive: nothing drops or
+rewrites a column, so a restored older file is brought up to schema at startup
+without losing anything. A destructive change would need a real migration step;
+there has not been one.
+
+**Account recovery.** There is no email, so recovery is a link somebody hands
+over. An instance admin issues one from `/admin`; it is shown once, works once,
+expires in an hour, and signs the account out of every session when redeemed.
+
+If nobody can sign in at all, the operator issues one from the server:
+
+```bash
+npm run user:reset -- you@example.org
+# in Docker:
+docker compose exec forgeboard node scripts/reset-password.ts you@example.org
+```
+
+That prints a one-use link and records the issue in the audit trail. Whoever can
+run it already has the database in their hands, so it grants nothing they could
+not take anyway — it is simply the safe, recorded way to give access back.
+
+As a last resort, the database can be edited directly, or deleted so that the
+first account registered on the fresh instance becomes the admin:
+
+```bash
+sqlite3 /data/forgeboard.db "UPDATE users SET global_role='admin' WHERE email_ci='you@example.org';"
+```
+
+## If you outgrow SQLite
+
+The schema is deliberately portable. Moving to Postgres means:
+
+1. `TEXT` ids, `TEXT` timestamps and `REAL` scores all map directly.
+2. Replace `INTEGER` booleans with `BOOLEAN`, or keep the `CHECK`.
+3. `IFNULL` → `COALESCE`; the partial-unique-index trick becomes
+   `CREATE UNIQUE INDEX ... ON event_roles (event_id, user_id, role, COALESCE(track_id, ''))`.
+4. `INSERT OR IGNORE` → `ON CONFLICT DO NOTHING`; the upserts are already
+   `ON CONFLICT ... DO UPDATE` and port unchanged.
+5. Swap `lib/db/client.ts` for a `pg` pool and make the call sites `await`.
+
+The domain layer never touches the driver directly, so that is the only file
+with dialect knowledge — plus the `IFNULL` occurrences, which `grep` finds.

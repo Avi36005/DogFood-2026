@@ -1,22 +1,42 @@
-# Forgeboard runs on Node's standard library (node:http, node:sqlite, node:crypto) and nothing else.
-# There is no npm install and no build step, so once the base image is cached this builds and
-# runs with the network off.
-FROM node:24-alpine
-
-ENV NODE_ENV=production \
-    FORGEBOARD_PORT=8080 \
-    FORGEBOARD_DB_PATH=/data/forgeboard.db \
-    FORGEBOARD_FIXTURES=/app/fixtures.json
-
+# Forgeboard: one image, no database container, no external service.
+# Node 22.5+ is required for the node:sqlite standard-library driver.
+FROM node:24-alpine AS deps
 WORKDIR /app
-COPY package.json fixtures.json ./
-COPY src ./src
-COPY static ./static
-RUN mkdir -p /data && chown node:node /data
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev --no-audit --no-fund || npm install --omit=dev --no-audit --no-fund
 
-USER node
-VOLUME /data
-EXPOSE 8080
-HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:8080/healthz || exit 1
-CMD ["node", "--disable-warning=ExperimentalWarning", "src/server.ts"]
+FROM node:24-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm install --no-audit --no-fund
+COPY . .
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN npm run build
+
+FROM node:24-alpine AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV FORGEBOARD_DB_PATH=/data/forgeboard.db
+ENV FORGEBOARD_UPLOAD_DIR=/data/uploads
+
+RUN addgroup -S forge && adduser -S forge -G forge
+
+COPY --from=deps  /app/node_modules ./node_modules
+COPY --from=build /app/.next        ./.next
+COPY --from=build /app/public       ./public
+COPY package.json ./
+COPY lib          ./lib
+COPY scripts      ./scripts
+COPY fixtures.json ./
+COPY docker-entrypoint.sh ./
+
+RUN mkdir -p /data && chown -R forge:forge /data /app && chmod +x docker-entrypoint.sh
+USER forge
+VOLUME ["/data"]
+EXPOSE 3000
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=5 \
+  CMD node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+ENTRYPOINT ["./docker-entrypoint.sh"]

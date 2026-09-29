@@ -1,152 +1,251 @@
 # Architecture
 
-Forgeboard is one Node process and one SQLite file. It renders HTML on the server, answers JSON
-on the same routes' domain functions, and needs nothing from the network.
+## Shape of the system
+
+One Next.js application, one SQLite file, one container.
 
 ```
-            docker compose up
-┌──────────────────────────────────────────────────────────────────────────┐
-│ container: node:24-alpine, runs as user "node"                           │
-│                                                                          │
-│   node:http ──► http/app.ts ──► routes/*.ts ──► domain/*.ts ──► db/store  │
-│                 security headers   parse, render   rules + authorization  │
-│                 session lookup     pick HTML/JSON  one transaction each   │
-│                 CSRF check                                                │
-│                 error boundary ◄── HttpError / AccessDenied (audited)     │
-│                                                                          │
-│   volume /data ── forgeboard.db (SQLite, WAL) ── the only state there is  │
-└──────────────────────────────────────────────────────────────────────────┘
-        no egress, no second service, no API key, no npm install
+                      ┌──────────────────────────────────────────┐
+  browser  ──HTTP──▶  │  Next.js (App Router, React 19)          │
+                      │                                          │
+                      │   pages / route handlers    ← no rules   │
+                      │            │                  live here  │
+                      │            ▼                             │
+                      │   ┌──────────────────────┐               │
+                      │   │  capabilityFor()     │  ← the only   │
+                      │   │  (lib/authz.ts)      │    door       │
+                      │   └──────────┬───────────┘               │
+                      │              ▼                           │
+                      │   domain services (lib/domain/*)         │
+                      │   events · teams · projects · judging    │
+                      │   scoring · results · exports · audit    │
+                      │              │                           │
+                      │              ▼                           │
+                      │   lib/db/client.ts  (node:sqlite)        │
+                      └──────────────┬───────────────────────────┘
+                                     ▼
+                         /data/forgeboard.db  +  /data/uploads
 ```
 
-## The request path
+There is no second process. No queue, no cache server, no database container,
+no sidecar. This is a deliberate choice: the thing being optimised is whether a
+stranger can run it, and every additional moving part is a way for that to fail
+on someone else's laptop.
 
-1. **`http/app.ts`** sets the security headers, then builds a `Ctx`. The `Ctx` holds the parsed
-   URL, the cookies, the CSRF cookie and the server's clock reading for this request.
-2. **Static files** (`/static/*`) are served from memory with a content hash in the URL, so a
-   release is never hidden behind a cached stylesheet.
-3. **The session cookie** is hashed and looked up. An unknown or expired token is simply no user.
-4. **The router** matches method and path (`http/router.ts`, about 60 lines). For `POST`,
-   **`ctx.verifyCsrf()`** runs *before* any handler, so no route can forget it.
-5. **A route handler** (`routes/*.ts`) parses input and calls **one domain function**. It then
-   renders a page (`views/*.ts`) or answers JSON, and redirects after a successful form post.
-6. **The domain function** (`domain/*.ts`) takes an `Actor` (user, IP, server time). It checks
-   authorization, then does its reads and writes in **one transaction**.
-7. **Errors** become responses in one place, `fail()`:
-   - `HttpError` keeps its status.
-   - `ValidationError` re-renders the form with every field's message.
-   - A database constraint violation becomes a 409 instead of a crash.
-   - An `AccessDenied` is written to the audit trail *after* the transaction has rolled back,
-     so a refused attempt is never lost with the work it tried to do.
+## Trust boundaries
 
-## Layers
+There are three, and only one of them matters.
 
-| Directory | Owns | May use |
-|---|---|---|
-| `src/http/` | HTTP: context, router, CSRF, rate limits, static files, the error boundary | domain errors |
-| `src/routes/` | One module per area: public, auth, teams, judge, organize, admin, api | domain, views |
-| `src/domain/` | The rules. Authorization, deadlines, assignment, normalization, results, audit | db, util |
-| `src/views/` | HTML as escaped template literals. No logic beyond presentation | util |
-| `src/db/` | `Store` (prepared statements, transactions), migrations | node:sqlite |
-| `src/util/` | Errors, form reading, CSV, time, tokens. No I/O | node:crypto |
+1. **Browser → server.** Everything from the browser is hostile input: form
+   fields, URL segments, query strings, cookies. Nothing from the client is
+   trusted to describe who the user is or what they may do.
+2. **Server → database.** Every query is a prepared statement with bound
+   parameters. String concatenation into SQL appears nowhere; the only
+   interpolated fragments are column names built from a fixed allowlist inside
+   the module that owns the table.
+3. **Server → outside world.** There isn't one at runtime. Forgeboard makes no
+   outbound requests. URLs that participants submit are stored and rendered as
+   links with `rel="noopener noreferrer nofollow"`; the server never fetches
+   them, so a submitted URL cannot be used to make the server talk to anything.
 
-Dependencies point one way: `http → routes → domain → db`. The domain never sees a request, so
-the same function serves the HTML form, the JSON API and the tests.
+## Authorization
 
-**Authorization lives in the domain, not the routes.** Every write function starts with the
-check it needs:
-- `requireRole(store, actor, event, ['organizer'], 'publish the results of …')`
-- `assertSubmissionsOpen(event, actor.now)`
-- a team-membership test
+This is the part the whole product stands on, so it gets its own section.
 
-A route that forgot a check could not leak: the function it calls refuses the caller. The
-queries themselves are scoped where it matters. A judge's queue is `WHERE a.judge_id = <the
-caller>`, and there is no parameter to ask for someone else's. Three pure modules have no database
-access at all and are tested alone: `domain/normalization.ts` (the model fit),
-`domain/uncertainty.ts` (rank intervals, leave-one-judge-out, the prize line),
-`domain/pairwise.ts` (Bradley–Terry, implied comparisons, the pair picker) and
-`domain/assignment.ts` (the planner).
+**Rules live in the data layer, not in the pages.** A React component deciding
+whether to render a button is a courtesy to the user, never a control. The real
+decision happens in `lib/authz.ts` and the domain services that require its
+output.
 
-Evidence is built from the standard library too: `domain/audit.ts` chains entries with SHA-256,
-`domain/commitment.ts` fingerprints the method when scoring starts, `domain/signing.ts` holds the
-Ed25519 key (`node:crypto`), `domain/evidence.ts` builds, parses and verifies the signed results
-document, and `views/capsule.ts` renders the self-verifying results file, whose inline checker
-restates the fit in 30 lines so it can run with no server.
+The unit of authority is a **capability**: what one actor may do inside one
+event.
 
-The public tier follows the same shape: `domain/voting.ts` (settings, codes, ballots, the
-per-voter shuffle, tallies, clusters) and `domain/comments.ts` hold every rule, and
-`routes/community.ts` only parses and renders. The tally's visibility is decided in the domain,
-so the page, the JSON API and the CSV cannot disagree about who may see it.
+```ts
+type Capability = {
+  actor: Actor | null;
+  eventId: string;
+  isAdmin: boolean;
+  isOrganizer: boolean;
+  viaAdmin: boolean;      // organizer here only because they administer the instance
+  isJudge: boolean;
+  isParticipant: boolean;
+  judgeTrackIds: string[] | null;   // null = every track
+};
+```
 
-## Decisions worth defending
+It is built by reading `event_roles` from the database on every request.
+It is never cached across requests, never serialised to the client, and never
+derived from anything the browser sent except the session cookie.
 
-| Decision | Why | Cost we accepted |
-|---|---|---|
-| **Zero runtime dependencies**: `node:http`, `node:sqlite`, `node:crypto` | `docker compose up` cannot break on a registry outage or a yanked package, the image builds with the network off, and there is no supply chain to audit | A router, request context, form reader and template helper written here, about 500 lines together |
-| **SQLite in WAL mode, one file** | No second container, no health-check race, backup is one file. The whole fixture imports in about 50 ms | One writer at a time; no horizontal scaling. Right for a hackathon, wrong for a SaaS |
-| **TypeScript run directly by Node** (type stripping, erasable syntax only) | Types without a build step. `tsc` is a development check, not part of shipping | No enums or parameter properties; `.ts` extensions in imports |
-| **Server-rendered HTML, no client framework** | Pages work without JavaScript. The gallery's fixture titles are in the response body, so curl sees them. Authorization is never duplicated in a client | About 70 lines of progressive-enhancement JS: the menu, copy buttons, the live refresh |
-| **Escaping by default** (`views/html.ts`) | Every interpolated value is escaped unless it is already `SafeHtml`. There is no way to print user text raw by accident | Templates are strings, not components |
-| **Strict CSP**: `script-src 'self'; style-src 'self'`, no inline anything | An injected `<script>` would not run even if escaping failed | No inline styles, so progress bars use native `<progress>` |
-| **The phase is computed, never stored** | "Open", "judging" and "published" are derived from the dates, so the label can never disagree with the rule that enforces it | A few date comparisons per request |
-| **The deadline is checked first, inside the write's transaction** (`BEGIN IMMEDIATE`) | A late request is refused for being late, whatever else is wrong with it, and no write can slip in between the check and the commit | Writers queue on SQLite's lock, which is microseconds here |
-| **403 means "not yours", decided before looking** | Refusals are decided from the caller's roles *before* the target is fetched, so a 403 is not an oracle for which judges or reviews exist | Organizers and judges hit different refusal messages; both are logged |
-| **Fixture ids kept as primary keys** | `prj_07` in the database is `prj_07` in the file, so every exported number traces back to the input | Ids are opaque strings with mixed origins (`prj_07`, `prj_k3v9x2m1qa7d`) |
-| **Raw scores stored, derived values recomputed** | Weights can change without rewriting reviews. Normalized results live only in immutable, published snapshots | Standings are recomputed on each preview (about 10 ms on the fixture) |
-| **One-time links instead of email** | No SMTP server, no hosted mail provider, fully offline | People pass links on by hand; stated in the UI and the README |
+Domain functions refuse to run without the right capability:
 
-## Security in one place
+```ts
+export function judgeProgress(cap: Capability): JudgeProgress[] {
+  requireOrganizer(cap);      // throws AccessDenied
+  return all(/* ... */);
+}
+```
 
-- **Sessions:** 256-bit random tokens. The cookie is `HttpOnly; SameSite=Lax` (`Secure` behind
-  HTTPS), and the database stores only SHA-256 hashes. Sessions last 14 days, sign-out deletes
-  the row, and a password change ends every other session.
-- **CSRF, in three layers:**
-  1. The cookie is `SameSite=Lax`.
-  2. A browser's `Origin` header must be ours.
-  3. Form bodies must carry an HMAC token bound to a per-browser cookie.
+Roles are **per event**. A person can organize one event, judge a second and
+compete in a third. The only instance-wide role is `admin`, which manages
+accounts and does not confer event powers automatically — it grants organizer
+rights only where explicitly recorded in `event_roles`.
 
-  JSON bodies need no token: a cross-site page cannot send `application/json` without a CORS
-  preflight, which this server never approves. A `text/plain` body is refused with 415.
-- **Passwords:** scrypt (N = 16384, r = 8, p = 1) with a per-password salt. The parameters are
-  stored in the hash so they can be raised later. A sign-in for an unknown email still spends
-  the scrypt time.
-- **Input:** a 1 MB body limit, every field length-checked, and URLs restricted to `http(s)`.
-  SQL is parameterized everywhere.
-- **Output:** HTML escaped by default. CSV cells starting with `= + - @` are prefixed.
-  Security headers go on every response.
+### Isolation is a query shape, not a filter
 
-The full analysis is in [THREAT-MODEL.md](THREAT-MODEL.md).
+The strong version of "a judge cannot see another judge's scores" is that no
+code path exists which would return one. A judge's queue is not "all
+assignments, filtered by mine" — it is selected *by* ownership:
 
-## Operability
+```sql
+SELECT ... FROM assignments a
+ WHERE a.event_id = ? AND a.judge_user_id = ?   -- the actor's own id
+```
 
-- **Boot** (`boot.ts`) is idempotent and safe on every start:
-  1. Migrate.
-  2. Generate a signing secret once.
-  3. Import the fixtures if asked (skipped if the event exists).
-  4. Seed demo mode, or print a first-administrator link.
+Opening a single review re-runs every check rather than trusting that the
+caller came from the queue: assignment belongs to this event, assignment belongs
+to *this actor*, the project is inside the judge's track grant, and the judge is
+not on the project's own team. `saveReview` calls `openReview` first, so the
+write path cannot be reached without passing the read path's checks.
 
-  The first start takes about 0.1 s after the image is built.
-- **Health:** `GET /healthz` runs a query. The container health check uses it.
-- **Operator CLI:** `src/cli.ts` covers `backup` (a consistent `VACUUM INTO` copy while running),
-  `import`, `password-link` and `make-admin`.
-- **Logs:** the boot summary goes to stdout, and unexpected errors go to stderr with method and
-  path. Refusals and changes go to the audit table, not the log.
-- **Shutdown:** SIGTERM and SIGINT close the server and the database cleanly.
+A refused attempt is recorded in `audit_events` with `outcome = 'denied'`, the
+actor and the reason. An organizer can read who tried what without a database
+client.
 
-## Testing
+Route handlers (`/api/.../export/...`) call the *same* domain functions as the
+pages, so a `curl` is refused exactly as the interface is. That symmetry is the
+point: there is no "API path" with its own, weaker rules.
 
-`npm test` runs Node’s built-in test runner over `tests/`: 145 tests in about 11 seconds, including a crawl of every link and a press of every button as every role.
+### Failure mode: 404, not 403
 
-- **Unit tests** cover the model, the planner, deadlines, CSV, escaping and passwords.
-- **Data tests** run against an in-memory database and cover the importer and schema constraints.
-- **HTTP tests** start real servers on random ports with throwaway databases. They drive the real
-  forms with a cookie-and-CSRF-aware client, and include the full lifecycle, the authorization
-  matrix and the checker's seven behaviours.
+When an actor lacks a role, pages return **404**, not 403. A judge poking at
+`/events/x/organize` learns nothing about whether that console exists. The CSV
+endpoints return 403 because they are an explicit machine-facing surface where
+a clear refusal is more useful than a lie.
 
-Tests never touch `./data` or a running instance.
+## Request lifecycle
 
-## What is deliberately not here
+1. Request arrives. `currentActor()` reads the session cookie, hashes it, and
+   looks up a live, unrevoked, unexpired session joined to a non-disabled user.
+   No cookie, or no match → `null` (a visitor).
+2. The page resolves the event and calls `capabilityFor(actor, event.id)`.
+3. The page calls domain services, passing the capability. Services enforce.
+4. Services write `audit_events` for every state change and every refusal.
+5. React renders. Field-level visibility is decided by what the service
+   *returned*, never by CSS: data an actor may not see is not in the payload.
 
-No background worker, queue, cache, or ORM. No client-side routing, no CSS framework, no web
-fonts. The system fonts are fine, and a font download would break the offline rule. Each would
-add a moving part without adding a requirement met.
+## Why these choices
+
+**SQLite via `node:sqlite`, not Postgres.** The rule that matters is "runs on a
+laptop with the network off, from one command". A second container is the most
+common way that promise breaks: healthcheck races, volume permissions, a port
+already bound. `node:sqlite` is in the Node standard library, so there is no
+native build step, no driver to install and nothing to start. At the scale of a
+hackathon — tens of projects, tens of judges, thousands of scores — the write
+concurrency ceiling is far away. `DATA-MODEL.md` documents the migration path
+if you outgrow it.
+*Cost:* one writer at a time, and no network-accessible database for external
+tooling.
+
+**No ORM.** The schema is the product's most-read artifact, so it is plain SQL
+in `lib/db/schema.sql` where a reviewer can read it in one pass. Queries are
+prepared statements in the module that owns the table.
+*Cost:* hand-written row types, and no compile-time link between them and the
+DDL. The integration tests are what catch a drift.
+
+**`scrypt` and server-side sessions, not JWT.** Sessions are database rows;
+the cookie carries an opaque 256-bit token and only its SHA-256 is stored.
+A database leak yields no usable sessions, and revocation is immediate — a
+disabled account's sessions die on the next request, which is not true of a
+self-contained signed token.
+*Cost:* a database read per request. At this scale it is a single indexed
+lookup.
+
+**Server Actions over a REST API.** T2 does not require a public API, and
+building one properly (versioning, auth tokens, OpenAPI) is T4 work. Server
+Actions let forms post directly to typed server functions that call the same
+domain layer. When the API arrives it should be another adapter over those
+services, not a parallel implementation.
+*Cost:* no programmatic access today beyond CSV export and `/api/health`.
+
+**Fonts vendored, analytics removed.** The source design used
+`next/font/google` and `@vercel/analytics`. Both reach the network. Geist Sans,
+Geist Mono and Geist Pixel Line ship inside the `geist` npm package, so the
+identity survives and the offline requirement holds.
+
+## Concurrency and correctness
+
+- Writes that must not interleave run in `BEGIN IMMEDIATE` transactions
+  (`tx()` in `lib/db/client.ts`): accepting an invite, submitting a review,
+  computing a snapshot, publishing a rubric.
+- Accepting an invite checks the seat count, inserts the membership and
+  increments the use counter inside one transaction, so two people racing for
+  the last seat cannot both win.
+- `events`, `projects` and `reviews` carry a `version` column. The submission
+  form posts the version it was rendered with; a mismatch is refused with a
+  message naming the cause rather than silently overwriting a teammate.
+- Uniqueness is enforced by indexes, not by checking first: one project per
+  team, one review per assignment, one assignment per judge-project pair, one
+  score per criterion per review.
+
+## The admin override, and why it is noisy
+
+An instance admin can open any event. That is what instance administration
+means, and pretending otherwise would make the role useless. What it must not
+be is *quiet*: `viaAdmin` marks a capability that exists only because of the
+global role, and `audit.adminAccess()` writes an `admin.access` row into **the
+event's own** audit trail the first time such an actor touches the console, an
+export or an organizer API route in a five-minute window. The organizers of
+that event see it in their own audit tab.
+
+Repeats inside the window collapse into the first record, so paging around the
+console leaves one line rather than forty.
+
+## Streaming, and why the shell is not flushed early
+
+Next renders these pages dynamically. A route-level `loading.tsx` would wrap
+each page in a Suspense boundary and flush the shell immediately — and once a
+byte is on the wire, `redirect()` and `notFound()` can no longer set a status
+code, so an unauthorized page would answer **200** with a client-side redirect
+inside it. Status codes are part of the authorization story here, so there is
+no route-level loading file.
+
+Where a loading state is genuinely useful — the gallery's result grid — the
+Suspense boundary sits *inside* the page, after the event has been resolved and
+the access decision made. The skeleton streams; the status code stays honest.
+
+## Time
+
+Every instant is stored as a UTC ISO-8601 string. `events.timezone` is a
+display preference only. Deadlines are evaluated with the **server** clock in
+`submissionsOpen()` and `judgingOpen()`; the client's clock is never consulted
+and never trusted. The submission form hides itself after the deadline, but the
+check that decides is the one in `assertEditable()`.
+
+## Layout
+
+```
+app/                     routes; pages resolve capability, then render
+  page.tsx               the landing page (dark, the reference's sections)
+  (app)/                 every other page; its layout adds the light sidebar shell
+  api/health             liveness plus a real database read
+  api/events/[slug]/export/[name]   CSV, same authz as the pages
+lib/
+  db/client.ts           connection, migrate() + additive column upgrades, tx()
+  db/schema.sql          the whole schema, plain SQL
+  auth/password.ts       scrypt hash and verify
+  auth/session.ts        cookie ↔ session row ↔ Actor
+  authz.ts               Capability, requireX(), conflict-of-interest (current and past)
+  domain/                one module per area; all rules live here
+  actions/               "use server" adapters: FormData → domain calls
+components/
+  ui/                    the reference project's shadcn library, unmodified
+  landing/               the reference project's landing sections, copy changed
+  app/                   app screens composed from components/ui
+scripts/                 migrate, seed, reset, reset-password (operator recovery)
+tests/                   scoring, backend behaviour, community, stretch, governance
+```
+
+The dependency rule is one-directional: `components` → `actions` → `domain` → `db`.
+Nothing in `domain` imports from `ui` or `actions`, which is what lets the test
+suite exercise the real rules without a browser.

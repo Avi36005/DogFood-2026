@@ -1,82 +1,293 @@
 # Threat model
 
-A judging portal is attacked by the people it serves more often than by strangers:
-- a team that wants one more hour
-- a judge who wants to see how the others scored
-- a friend who wants a friend to win
-- an organizer under pressure
+Scope: a self-hosted Forgeboard instance running one hackathon. Assets worth
+attacking are **the ranking**, **unpublished scores**, and **submissions**.
 
-This page lists what is worth protecting, who might try what, and what stops them. It also
-lists what does not.
+The useful list is the honest one, so the "not stopped" section is longer than
+the "stopped" section.
 
-## What is worth protecting
+## Who attacks this
 
-1. **The ranking's integrity.** Scores reach the ranking only from the assigned judge, inside
-   the judging window, and the method that turns them into ranks is fixed and recorded.
-2. **Judge independence.** No judge sees another judge's scores before, during or after judging.
-3. **The deadline.** Nothing about a submission changes after it.
-4. **Accounts and roles.** Nobody acts as someone else, or with a role they do not hold.
-5. **The record.** What happened, who did it and what was refused can be reconstructed later.
+| Actor | Wants | Has |
+|---|---|---|
+| Competing participant | A better placing; a look at rivals' work before submitting | An account, a team, a submission |
+| Curious judge | To see how peers scored, or to coordinate | A judge account and a queue |
+| Outsider | Scraped submissions; a defaced gallery | Network access to the instance |
+| Bulk registrant | Many accounts, for whatever a future voting feature enables | An email pattern and a script |
+| Careless organizer | Nothing — but has every power and will click things | Full event authority |
 
-## Who might attack, and how
+---
 
-| Actor | Wants to | What stops it | Where |
-|---|---|---|---|
-| **A late team** | Edit or submit after the deadline via the page, the API, a stale tab or a scripted POST | The deadline is checked against the **server clock inside the same transaction as every write** to a team or project, API included. The client's clock is never consulted. The boundary is exclusive: at 18:00:00.000 the event is closed | `domain/events.ts` `assertSubmissionsOpen`; `tests/unit/deadline.test.ts`; lifecycle test *after that every write is refused* |
-| **A team fighting over one project** | Overwrite a teammate's edit | Optimistic versioning: an edit made against an old version gets 409 instead of silently winning | `updateProject`; *a stale edit is refused* |
-| **A curious judge** | Read another judge's scores or reviews by editing a URL or calling the API | Authorization in the backend. A judge's queries are keyed on their own id. `?judge=<other>` and another judge's review page return **403**, decided before the target is looked up (no existence oracle), and **logged** | `judgeScores`, `reviewPage`; `tests/http/matrix.test.ts` |
-| **A judge on a team** | Score their own team | A judge cannot hold the judge role in an event where they are on a team, and cannot join a team there. The assignment planner also excludes team members | `inviteJudge`, `createTeam`, `joinTeam`, `assignment.ts` |
-| **A judge rigging the result** | Give a friend 5s and rivals 1s | They can only score the projects assigned to them, and every score and revision is audited with its values. Normalization fits their *overall* generosity, so a uniformly generous judge moves nothing. Selective favouritism is not removed by any model: it is made **visible**, since the organizer sees every judge's reviews, offsets and flags | JUDGING.md §3–4 |
-| **Colluding judges** | Coordinate scores between them | They cannot see each other's scores inside Forgeboard. Outside it, collusion is a social problem. The mitigations are: several judges per project (the target is 3 by default), one judge's pull limited to their share of a project's reviews, and complete per-judge exports for an after-the-fact review | assignment target; `exports.ts` |
-| **An organizer** | Quietly change weights, the deadline or the duplicate decision after seeing a preview | Every such change is audited with its before and after values. A published snapshot freezes the method, λ and weights, and republishing supersedes it without deleting it. The audit log is **append-only in the database** (triggers reject `UPDATE` and `DELETE`) | `rubric.ts`, `updateEvent`, `results.ts`; *the audit log is append-only* |
-| **An organizer, after seeing who is ahead** | Retune the method or the weights so a favourite wins | The method, λ, scale and weights are **fingerprinted into the audit chain when the first score arrives**. Publishing compares, and the public results page and the signed document say "method unchanged" or "method changed" | `commitment.ts`; *method commitment* |
-| **Whoever holds the database file** | Rewrite history: edit or delete an audit entry around the triggers | Every audit entry stores the SHA-256 of the one before it and of its own fields. An edit breaks its own hash; a deletion breaks the next entry's link. `cli.ts verify-audit` and the Audit page name the first entry that fails | `audit.ts` `verifyChain`; *an edit made around the triggers is caught* |
-| **Anyone after publication** | Change a published score or rank, or the reviews behind it | Results are **signed with Ed25519** and the signed document quotes the audit chain's head and a fingerprint of the inputs. The results capsule checks the signature, the fingerprint and a refit in any browser, offline | `evidence.ts`, `views/capsule.ts`; `tests/http/evidence.test.ts` |
-| **A ballot stuffer** | Vote many times | **One ballot per account and per voter code**, enforced by unique indexes in the same transaction that checks the window against the server clock; picks are final (triggers). Judges and organizers cannot vote at all, and nobody can approve their own team's project | `voting.ts` `castBallot`; `tests/http/community.test.ts` |
-| **A code guesser** | Find a valid voter code | Codes are 12 characters from a 31-letter alphabet (about 59 bits), stored only as SHA-256 hashes. Wrong codes are limited to 20 per address per 10 minutes; only failures count, so a venue behind one address is never throttled. A wrong code and a spent code get the same answer | `voting.ts` `resolveVoter`; *guessing codes is rate limited* |
-| **A venue full of sock puppets** | Cast ballots from many accounts on one network | Ballots store keyed hashes (HMAC) of the address and browser. Three or more valid ballots from one address are **grouped for the organizer**, flagged rather than refused because a venue shares an address, and can be **voided with a reason** before publication. Every void is audited and in the `votes` CSV | `ballotClusters`, `voidBallot` |
-| **A bandwagon** | Steer late voters with an early lead | The tally is hidden from everyone but organizers, in the backend and the API, until voting has closed and an organizer publishes it | `visibleTally`; *the tally is hidden* |
-| **Position bias** | Win by being first on the list | Each voter's ballot is shuffled with a seed derived from an HMAC of the event and the voter: stable for them, different for everyone else. Over 4,000 simulated ballots each of 8 projects leads about equally often | `ballotChoices`, `shuffle`; *every voter sees their own order* |
-| **A judge gaming compare mode** | Push a favourite through many pairwise choices | A judge compares only their own assigned projects, each pair once (a unique index), and choices are final and audited. The pairwise ranking is a second opinion shown beside the rubric ranking and never changes it | `compare.ts`; *compare mode* tests |
-| **A comment troll** | Spam, abuse or script injection in comments | Signed-in accounts only, 10 comments per 10 minutes per account, escaped everywhere. Organizers hide with a written reason; the comment stays on record, marked, and the take-down is audited. Only the author or an organizer can take a comment down, and other attempts are audited | `comments.ts`; *comments* tests |
-| **Someone signing up as an invited judge** | Take over a judge's seat by registering their email first | Sign-up refuses any email that already exists, including invited and imported people who have not set a password. They can only claim the account with their one-time link | `signUp`; `security.test.ts` |
-| **A credential stuffer** | Guess passwords | scrypt hashing, and 10 attempts per IP and email per 10 minutes (then 429). A failed sign-in for an unknown email takes as long as one for a known email | `signIn`, `http/rate-limit.ts` |
-| **A cross-site page** | Make a signed-in organizer's browser publish results or change settings | `SameSite=Lax` cookies, an `Origin` check, and an HMAC token on every form. JSON is accepted only as `application/json`, which needs a CORS preflight that is never granted | `Ctx.verifyCsrf`; `security.test.ts` |
-| **An injected script** | Run JavaScript in an organizer's browser via a project title or a comment | HTML is escaped by default, and a strict CSP allows no inline script or style | `views/html.ts`; *user text is escaped wherever it is shown* |
-| **A malicious spreadsheet cell** | Run a formula when an organizer opens the CSV | Cells beginning with `= + - @`, a tab or a CR are prefixed with `'` | `util/csv.ts` |
-| **A session thief** | Replay a stolen cookie or a copied database | Cookies are `HttpOnly` (and `Secure` behind HTTPS). The database holds only token *hashes*, so a copy of it grants no sessions. Sign-out deletes the session, and a password change ends every other session | `sessions.ts` |
-| **A link leaker** | Reuse a forwarded invite or reset link | Links are hashed at rest and expire. Password and judge links work once. A team invite dies when the captain creates a new one | `accounts.ts`, `teams.ts`, `judging.ts` |
-| **A resource exhauster** | Tie up the server | A 1 MB body limit, request and header timeouts, and bounded list sizes. Nothing the server does reaches out to the network, so there is no SSRF surface | `http/context.ts`, `server.ts` |
+## Stopped, with the mechanism named
 
-## Demo mode, stated as a risk
+*(Every item below has a test in `tests/`; the HTTP checks are reproduced in `README.md`.)*
 
-`FORGEBOARD_DEMO=1` creates five accounts with a password published in the README, and four
-fixed session tokens published in `.dogfood.toml`, so the acceptance checker and evaluators can
-act as each role. On a real event that is a master key. It is off unless enabled, the banner on
-every page says when it is on, the boot log warns in capitals, and the README's production
-steps start with turning it off.
+### Horizontal privilege escalation between judges
+A judge changing `assignmentId` in the URL to reach a peer's ballot.
+**Stopped:** `openReview()` refuses unless `assignment.judge_user_id` equals the
+actor. Queue rows are selected *by* ownership, not filtered after the fact.
+**Verified:** judge → own assignment `200`; judge → another judge's `404`;
+the refusal appears in the audit trail with actor and reason.
 
-## What this does not defend against
+### Vertical privilege escalation
+A judge or participant reaching the organizer console or the score exports.
+**Stopped:** `requireOrganizer(cap)` in every organizer-facing domain function;
+route handlers call the same functions as the pages.
+**Verified over HTTP:** organizer console `200/404/404` for
+organizer/judge/participant; `export/reviews` `200/403/403`; anonymous `403`.
 
-- **An administrator with shell access to the server, before results leave it.** They can edit
-  the SQLite file and recompute every later audit hash, since the chain has no secret in it, and
-  they hold the signing key, which lives in the database. The chain and the signature make a
-  rewrite *detectable once something has left the server*: a downloaded capsule, a saved
-  `results.json`, an off-host backup. They cannot stop a dishonest operator from publishing a
-  dishonest result in the first place.
-- **Cutting off the newest audit entries.** A truncated tail still verifies. Each published
-  document anchors the chain's head at that moment, so anything before the last publication is
-  covered; entries after it are not until the next one.
-- **Judges colluding outside the system**, or a judge scoring dishonestly within their own
-  assignments. Forgeboard makes both visible, but it cannot make them impossible.
-- **Distributed guessing from many IPs.** The rate limit is per IP and email, in memory, and
-  resets on restart. A reverse proxy's limits are the next layer.
-- **Sybil accounts in accounts-mode voting.** Sign-up is open, so one person can make several
-  accounts and cast several ballots. Address clusters make it visible and an organizer can void
-  ballots, but a determined voter on several networks gets through. Voter codes are the remedy:
-  a code is a physical token, one per attendee.
-- **Handed-on codes.** A code given to someone else is a ballot given to someone else. Nothing
-  in software tells the two apart.
-- **Coordinated honest-looking votes** (a team asking friends to vote). That is campaigning, not
-  fraud; approval voting with a budget limits what any bloc can do per ballot, and the tally is
-  published only after an organizer has looked at it.
+### Track leakage
+A track-restricted judge reaching another track's projects, including via an
+assignment an organizer created by mistake.
+**Stopped:** `capabilityFor()` resolves `judgeTrackIds`; `openReview()`
+re-checks the project's track against the grant even when an assignment exists.
+**Verified:** a deliberately forged cross-track assignment is refused.
+
+### Judging your own team
+**Stopped:** `hasConflict()` excludes team members at assignment time *and* at
+review-open time, because membership can change after a batch is issued.
+**Verified:** a test asserts zero assignments where the judge is on the
+project's team.
+
+### Deadline gaming
+Submitting after close by replaying the form, holding a tab open, or moving the
+client clock.
+**Stopped:** `assertEditable()` evaluates `submissionsOpen()` against the
+**server** clock on every write. The hidden form is cosmetic.
+**Verified:** a test submits past the deadline and is refused.
+
+### Score tampering by rubric edit
+Changing a weight after reviews land, to move the ranking.
+**Stopped:** rubrics are versioned; reviews keep `rubric_version_id`;
+`raw_weighted` is cached at submit time. A new rubric supersedes, never rewrites.
+
+### Early results disclosure
+**Stopped:** `publicResults()` returns nothing unless the event is
+`results_published` **and** a snapshot is `published`. Computing is a separate
+action from publishing, and publishing asks for confirmation.
+**Verified:** a test asserts results are `null` before publish and after
+unpublish.
+
+### Session theft from a database leak
+**Stopped:** only SHA-256 of the session token is stored, so database contents
+yield no usable cookie. Passwords are scrypt with per-user salts. Disabling an
+account revokes live sessions on the next request.
+
+### Credential stuffing
+**Stopped (blunted):** ten failed attempts per address in fifteen minutes and
+the form refuses. Failures are audit rows, so the evidence is readable. Sign-in
+returns one message whether the address exists or not; an unknown address still
+pays for a hash comparison, so timing does not reveal membership.
+
+### SQL injection
+**Stopped:** every query is a prepared statement with bound parameters. The
+only interpolated SQL fragments are column names built from fixed allowlists
+inside the module that owns the table.
+
+### CSV formula injection
+A project description of `=IMPORTXML(...)` executing when an organizer opens an
+export.
+**Stopped:** values beginning `=`, `+`, `-`, `@`, tab or CR are prefixed with a
+single quote. **Verified** by test.
+
+### Server-side request forgery via submitted URLs
+**Stopped:** the server never fetches a participant-supplied URL. They are
+stored and rendered as links with `rel="noopener noreferrer nofollow"`.
+
+### Cross-site scripting
+**Stopped (by default):** React escapes interpolated content and the codebase
+contains no `dangerouslySetInnerHTML`. Descriptions render as text.
+
+### Clickjacking / MIME sniffing
+**Stopped:** `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: same-origin` on every response.
+
+---
+
+## Reduced, with the residual risk named
+
+These are not wide open and they are not closed. Each one says what the
+control actually does and what it leaves standing.
+
+### Comment abuse
+**Stopped:** posting requires an account, is rate limited to 5 per minute per author, is length-capped
+at 2000 characters, and the author is always the authenticated actor — there is no author field in the
+payload to forge. Removal hides the text from every response while retaining the author's original
+words in the row, and moderation of someone else's comment requires an organizer role *and* a recorded
+reason. Rendered as text by React, so stored markup is inert. **Not stopped:** a determined person with
+several accounts can still post repeatedly.
+
+### Vote and comment leakage into judging
+**Stopped:** community votes and comments are separate tables read by separate services. The comment
+reader joins only to `users`; the tally is organizer-only; the webhook payload for `vote.cast` carries
+no totals. A test asserts that voting and commenting leave every `reviews` row byte-identical.
+
+### Webhook callbacks as an SSRF primitive
+**Stopped:** an operator-supplied callback URL is resolved, and any host resolving to loopback,
+private, link-local (including cloud metadata at 169.254.169.254), CGNAT or reserved space is refused —
+before the first request and again on every retry, because DNS can change between them. Redirects are
+not followed. Credentials in the URL and non-HTTP schemes are refused. A narrow
+`FORGEBOARD_WEBHOOK_ALLOW_LOCAL=1` exists for local testing and does not disable the other checks.
+
+### Forged webhook payloads at the consumer
+**Stopped:** every delivery carries `X-Forgeboard-Signature`, an HMAC-SHA256 over
+`deliveryId.timestamp.body`, verified in constant time. Delivery is at-least-once with a stable
+delivery id; consumers must deduplicate. We do not claim exactly-once.
+
+### Record forgery
+**Stopped:** participation records are Ed25519-signed over a canonical JSON serialisation, so key order
+cannot change a signature and a single altered character invalidates it. The private key is written
+0600 on the data volume and never leaves it. Verification needs only the published public key and no
+account. **Explicitly not stopped:** a valid signature proves authenticity, not truth — signing a false
+statement yields a validly signed false statement, and `/verify` says so in those words.
+
+### Cross-site request forgery
+**Stopped:** three layers, two of which are in this repository. Server Actions
+carry Next's own origin check; session cookies are `SameSite=Lax`; and every
+cookie-authenticated write through the REST API is refused unless the `Origin`
+header matches the host it was sent to (`sameOrigin()` in
+`app/api/v1/[[...path]]/route.ts`). That last one matters because SameSite
+treats every port on `localhost` as the same site, so a page served from
+`localhost:8080` could otherwise post to the API with a visitor's cookie. A
+request carrying an API key has no ambient credential and is unaffected.
+`authz.mjs` exercises all four cases: cross-origin, foreign-origin, no origin,
+and same origin.
+
+**Explicitly not stopped:** there is still no per-form CSRF token. The defence
+is origin-based, which fails if a browser ever lies about `Origin`.
+
+### An instance admin quietly reading an event they do not run
+**Not "stopped" — allowed, and recorded.** Instance administration means being
+able to open any event; a platform where that is impossible cannot be operated.
+What is guaranteed is that it is never invisible: a capability held only through
+the global role is marked `viaAdmin`, and the first such access to a console, an
+export or an organizer API route in any five-minute window writes an
+`admin.access` row into **that event's own** audit trail, which its organizers
+read. **Explicitly not stopped:** an admin with database access can edit the
+trail directly. Append-only here means "the application never updates or deletes
+these rows", not tamper-proof storage.
+
+### A revoked judge keeping access
+**Stopped:** capabilities are resolved from `event_roles` on every request, so
+removing a judge takes effect on the next one — no session, open page or
+in-flight download keeps the old powers. Their unfinished assignments are
+released for reassignment; their submitted reviews stay exactly as they were,
+because the record of who judged what has to survive the removal.
+
+### A judge escaping a conflict of interest by leaving the team
+**Stopped:** `team_member_history` records departures, and the conflict check
+consults current membership *or* that history. Leaving the team the day after
+assignments go out does not make a judge eligible to review their own project.
+
+### An invitation link being replayed, widened or shared
+**Stopped:** role invitations store only a SHA-256 of the token, expire in seven
+days, work exactly once, and can be revoked. The role and track scope are read
+from the stored row at acceptance, so the browser cannot widen a single-track
+grant. An invitation addressed to an email can only be accepted by the account
+holding it, and a mismatch is written to the audit trail as a refusal.
+**Not stopped:** an unaddressed link is a bearer token — whoever holds it can
+accept it. Address the invitation when that matters.
+
+### A stolen or guessed recovery link
+**Stopped:** recovery links are one-use, expire in an hour, store only a hash,
+invalidate every other outstanding link for that account when redeemed, and sign
+the account out of every existing session. The raw link never enters the audit
+trail; only the fact that one was issued, and by whom. **Not stopped:** anyone
+who can run a command on the server can issue one — but they already hold the
+database, so this grants nothing new. It is the recorded path rather than a
+silent one.
+
+### Secret leakage through data export
+**Stopped:** the portability bundle strips password hashes, salts, session hashes, raw tokens and IP
+hashes; a test asserts their absence. Imported accounts arrive with an empty password and
+`disabled_at` set, so an import cannot mint usable logins.
+
+### Uploaded file handling — partly mitigated
+Upload is now built. Stopped: the accepted type is decided by **magic bytes**, not by the filename or
+the browser's Content-Type; SVG is refused outright because it can carry script; the path on disk is
+generated from the asset id so a crafted name cannot traverse; a 5 MB cap and an 8-image limit apply;
+and served files carry `nosniff`, a sandboxing CSP and their recorded type.
+
+Not stopped: images are **not re-encoded**, so a file that is a valid image *and* something else
+remains intact on disk. Nothing executes it, but it is stored. There is no malware scanning and no
+per-user upload quota beyond the per-project limit.
+
+## Not stopped, and why
+
+### Sybil voting
+**This is the largest unmitigated risk in the product, and community voting is now built.**
+
+What is in place: one live vote per voter per project enforced by a partial unique index; a per-event
+budget checked inside the same transaction as the insert; three access modes with their real strength
+stated on the ballot page; organizer review signals for shared networks, rapid voting and repeated
+verification requests; and audited invalidation that removes votes from the count while preserving
+history.
+
+What none of that achieves is proof of one human, one vote:
+
+| Mode | What it proves | How it is defeated |
+|---|---|---|
+| Open link | This browser has not already voted | Clear cookies, open a private window, use another device |
+| Email-gated | Control of one address, once | Own several addresses |
+| Authenticated | One account on this instance | Register several accounts |
+
+Registration is unrestricted and unverified, because there is no mail server. So an attacker willing
+to spend a few minutes can vote several times in any mode. The honest mitigations are operational, not
+technical: keep the prize small, publish results only after review, and read the signals view before
+believing the numbers. That is the same advice the incumbent platforms give, and we have not beaten it.
+
+A real fix needs an identity signal we do not have — an invite list of known addresses, SSO against the
+organizer's own directory, or moderation of every voter. The audit trail exists so that abuse is
+*reconstructible after the fact*, which is what we can actually offer.
+
+### Gallery scraping
+The public gallery is public. There is no rate limit on reads. An organizer who
+needs submissions private before judging should keep the event in
+`submissions_closed` rather than `open`. Not fixed because read limits on a
+self-hosted instance mostly inconvenience legitimate users.
+
+### Judge collusion
+Two judges agreeing out of band on scores. Forgeboard cannot detect this and
+does not claim to. The calibration table makes a judge whose distribution is
+wildly unlike the panel's *visible*, which is detection of the crude case only.
+Genuine defence is panel composition, which is a human process.
+
+### A malicious or careless organizer
+An organizer can edit a submission after the deadline, revoke assignments,
+recompute and republish. This is by design — someone must be able to correct a
+record — and the control is the audit trail, not prevention. Every such action
+is logged with actor, subject and time. There is no separation of duties: a
+single organizer can do all of it unobserved except by the log.
+
+### Brute force across many accounts
+The throttle is per email address. An attacker trying one password against a
+thousand addresses is not slowed. Fixing it properly needs per-IP accounting,
+which needs a trustworthy client address, which needs knowing the proxy
+topology of a deployment I cannot see.
+
+### Denial of service
+No request rate limiting, no body size limits beyond framework defaults, no
+query cost control. SQLite serialises writers, so a write flood degrades the
+whole instance. Appropriate defence is a reverse proxy in front, which is a
+deployment concern and is not shipped here.
+
+### Timing side channels beyond login
+Page latency differs measurably between "not found" and "not allowed" in some
+paths, so a determined attacker could infer that an event or assignment exists.
+Both return 404, so the disclosure is timing-only and small.
+
+### Physical and host security
+Anyone with the volume has the database. There is no encryption at rest, and
+the demo seed ships a published password. **Change `FORGEBOARD_SEED=0` or reset
+the database before running a real event on this instance.**
+
+---
+
+## If you run this for real
+
+1. Put it behind a TLS-terminating reverse proxy and drop
+   `FORGEBOARD_INSECURE_COOKIES`, so session cookies are `Secure`.
+2. Start with `FORGEBOARD_SEED=0`. The demo accounts have a published password.
+3. Add rate limiting at the proxy, where the real client address is known.
+4. Back up `/data` on a schedule, with `.backup`, not `cp`.
+5. Read the audit log after the event. It is the only record of organizer action.

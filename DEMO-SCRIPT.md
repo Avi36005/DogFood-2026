@@ -1,38 +1,114 @@
-# Demo script: one event, create to publish, in five minutes
+# Five-minute demo
 
-For the DOGFOOD demo video. Start from a clean volume so the timestamps are fresh:
+A walkthrough of this exact build against the seeded demo event. Every mutation
+below really happens; the only thing prepared in advance is the seed data, which
+the script says out loud.
 
-```sh
-docker compose down -v && docker compose up
+**Before you start**
+
+```bash
+docker compose down -v && docker compose up -d
 ```
 
-Keep the terminal visible for the first 20 seconds: the boot log shows the fixture import and
-the demo sign-ins. All passwords are `forgeboard-demo`. Use one browser window per person
-(private windows work), or sign out and back in.
+Wait for the healthcheck (about two seconds), then open
+<http://localhost:3000>. Every demo account uses the password
+`forgeboard2026`. Have two browser profiles ready — an organizer in one, a judge
+in the other — so isolation can be shown rather than asserted.
 
-| Time | Who | Do | Say |
-|---|---|---|---|
-| 0:00 | terminal | `docker compose up` | "One command, no network needed. It imports the shared fixtures and prints four test sign-ins." |
-| 0:20 | visitor | Open http://localhost:8080, then **Browse projects** | "Public gallery, server-rendered: all 40 fixture projects, with search and filters in the URL." |
-| 0:35 | admin `admin@forgeboard.local` | **Events → Create an event**. Name "Demo Night", deadline **10 minutes from now** (UTC), tracks `Tools` and `Games`, 2 reviews per project | "Admins create events. Dates, tracks, team size, a review target." |
-| 1:00 | admin | **Event** tab: add a prize "Best tool" for Tools. **Rubric** tab: set Functionality's weight to 2 | "The organizer weights the rubric. Every change is audited." |
-| 1:20 | new person | **Create account** as `alice@example.com`, then on Demo Night choose **Join or start a team**, create "Alpha" and copy the invite link | "Teams form by invite link. Only a hash of the link is stored." |
-| 1:40 | second person | Open the invite link, create an account, **Join Alpha** | |
-| 1:55 | alice | **Start the project**, fill title, summary, track Tools and a repo URL, then **Save draft** | "Drafts are private." Show that a signed-out visitor gets 404 on its URL. |
-| 2:10 | alice | **Edit**, then **Submit project** | "Now it is public, and editable until the deadline." |
-| 2:25 | admin | **Judges** tab: invite "Jude", `jude@example.com`, covering Tools. Copy the link | "No mail server, so the organizer hands over a one-time link." |
-| 2:40 | Jude | Open the link, choose a password: the queue opens | |
-| 2:50 | admin | **Overview → Close submissions now**. Then, as alice, open the project's `/edit` URL directly: refused | "The Edit button is gone, and typing the URL doesn't help: the server refuses it, for pages and the API alike." |
-| 3:05 | admin | **Assignments → Fill gaps automatically** | "Track-aware, conflict-free, balanced. It says what it could not fill." |
-| 3:20 | Jude | Score the project 4, 5, 3, add a comment, **Submit review** | "Radio groups, keyboard-friendly, weights shown." |
-| 3:40 | terminal | `curl -H 'Cookie: session=jdg_b_demo_44de83a1c9f06b72' 'localhost:8080/api/judge/scores?judge=jdg_24'` | "On the fixture event, judge B asks for judge A's scores: 403 from the backend." |
-| 3:50 | organizer `organizer@forgeboard.local` | Sample Hack 2026 → **Audit trail**, show *Refused access attempts* | "The organizer sees who tried, and what." |
-| 4:00 | organizer | Sample Hack 2026 → **Results**, scroll to **How sure is this ranking?** | "Raw means beside normalized scores, and a 90% range for every place. First place survives removing any one judge in 22 of 29 refits, the top three are statistical ties, and it names the judges who decide first place, including `jdg_07`, the flat 4/4/4 judge." |
-| 4:15 | participant `priya1@example.org` | Sample Hack 2026 → **Vote for your favourites**: tick two projects, **Cast my ballot** | "Community vote. My own project is on the ballot but cannot be picked, the order is drawn for me alone, and the tally stays hidden until the organizers publish it." |
-| 4:25 | admin | Demo Night → **Results → Publish results** | "Publishing freezes the method, λ and weights, closes judging, and signs the result with Ed25519." |
-| 4:35 | organizer | Sample Hack 2026 → **Results → Publish results → Download signed results capsule**. Turn Wi-Fi off and open the file | "One HTML file, no server: it checks its own signature, its inputs and refits the ranking in the browser. Three green ticks." |
-| 4:45 | visitor | Sample Hack 2026 → **Results**, click **certificate** beside the winner | "T4: every project gets an Ed25519-signed certificate tied to the signed results. Judges download a signed record showing each of their reviews was counted at their value. Organizers get signed webhooks and an embeddable widget." |
-| 4:50 | terminal | `python3 run.py .dogfood.toml`, then `python3 scripts/t3_check.py .dogfood.toml` and `python3 scripts/t4_check.py .dogfood.toml` | "The official checker: T1 and T2 verified. Our T3 and T4 checks in the same format: 15 of 15 and 12 of 12." |
+---
 
-If time is short, cut the prize, the second teammate and the Demo Night publish. Never cut the
-403, the deadline refusal, the certainty section or the capsule.
+## 0:00 – 0:30 · What this is, and that it is running
+
+- The landing page. Forgeboard, **from first commit to final verdict**.
+- Scroll to *Live event progress*: those numbers are read from this instance's
+  database on render. Say so — they are not decoration.
+- Show the terminal: one command, no database container, no cloud account.
+  Cold start to healthy in about a second and a half.
+
+## 0:30 – 1:15 · An organizer sets an event up
+
+Sign in as `organizer@forgeboard.local`.
+
+- **Dashboard** — what is waiting on them, then review progress, then the event.
+- **Organizer console → Setup.** The checklist is computed from stored data, not
+  a stored progress field. Add a prize, and add a question of the *Choose one*
+  kind with two options — it appears on the submission form immediately.
+- Try a backwards window: set submissions to close before they open, save, and
+  read the refusal. Note the form still holds everything else you typed.
+
+## 1:15 – 2:00 · A team submits
+
+Sign in as `participant@forgeboard.local` (or register a new account).
+
+- **Submission.** Clear the description and press *Submit project*: the server
+  refuses and says which field is missing, and every other field is still there.
+- Put the description back, choose a track, answer the new question, submit.
+- Note *Saved at …* and the deadline with its countdown, in the reader's own
+  timezone.
+- Open the **gallery** in a signed-out window: the project is there. Drafts and
+  private answers are not.
+
+## 2:00 – 3:00 · A judge reviews, and cannot see anyone else's work
+
+Sign in as `judge@forgeboard.local` in the second profile.
+
+- **Review queue** — only their assignments; the rail filters by not started, in
+  progress and submitted.
+- Open a project. Score it with the keyboard: the running weighted total updates
+  as scores go in. Save a draft, reload, and show the draft came back.
+- Now the part that matters: copy another judge's assignment URL from the
+  organizer's audit trail and open it as this judge. **404** — and in the
+  organizer console's **Audit** tab, that refusal is on the record with the
+  actor and the reason.
+
+## 3:00 – 4:00 · The organizer inspects the scoring
+
+Back to the organizer.
+
+- **Panel** — create a judge invitation scoped to one track. The link is shown
+  once; explain that the scope lives on the invitation, so accepting it cannot
+  widen the grant.
+- **Assignments** — press *Preview*. Workload per judge, coverage per project,
+  and the projects that cannot be filled with the reason. Nothing has been
+  written yet; *Create* commits it.
+- **Results** — raw against normalized, rank movement, the constant judge
+  excluded by name, the judge with too few reviews excluded by name, and
+  projects marked *insufficient comparable reviews* rather than given a
+  confident rank. Point at `JUDGING.md` for the method and its limits.
+- **Projects** — disqualify one entry with a reason. It leaves the gallery, the
+  assignment pool and the results; the submission itself is untouched and the
+  decision is on the record. Reinstate it.
+
+## 4:00 – 4:40 · Publish, and own your data
+
+- **Results → Publish**, with the confirmation that says what becomes public.
+- Open `/events/autumn-build-2026/results` signed out: the published snapshot,
+  no private ballots.
+- **Exports** — take the reviews CSV, and the whole-event JSON bundle. Mention
+  that a formula-looking cell is neutralised on export and the stored value is
+  untouched.
+- Optional, if the room is technical: `/verify`, and an Ed25519-signed judge
+  participation record checked without an account.
+
+## 4:40 – 5:00 · What is done, and what is not
+
+Say plainly:
+
+- T1, T2 and T3 are complete, with the one documented T3 gap: email-gated voting
+  issues a real one-use token, but there is no mail server, so the operator
+  delivers it.
+- T4 is **partial and not claimed**: the API does not cover every UI action.
+- **The official checker passes 7 of 7** (`python3 run.py .dogfood.toml`).
+  131 of our own tests pass, the full lifecycle was driven in a real browser,
+  and `TESTING.md` says exactly what that does and does not prove.
+
+---
+
+## If something goes wrong on camera
+
+- **Nobody can sign in.** `docker compose exec forgeboard node scripts/reset-password.ts admin@forgeboard.local`
+  prints a one-use recovery link.
+- **The data looks wrong.** `docker compose down -v && docker compose up -d`
+  gives a fresh seeded instance in seconds.
+- **A port is taken.** Change the published port in `docker-compose.yml`; nothing
+  in the application assumes 3000.

@@ -1,9 +1,5 @@
 node_modules
+.next
 data
-*.db*
 .git
-tests
-research
-docs
 *.md
-!README.md
