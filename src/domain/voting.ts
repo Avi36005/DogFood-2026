@@ -23,7 +23,7 @@ import { conflict, notFound, unauthorized, ValidationError } from '../util/error
 import { FormReader, type Body } from '../util/form.ts';
 import { hashToken, hmac, newId } from '../util/tokens.ts';
 import { formatUtc, iso } from '../util/time.ts';
-import { AccessDenied, requireOrganizer, rolesIn } from './access.ts';
+import { AccessDenied, actsAsOrganizer, requireOrganizer, rolesIn } from './access.ts';
 import { actorLabel, record } from './audit.ts';
 import type { Actor, EventRow, UserRow } from './types.ts';
 import { mulberry32 } from './uncertainty.ts';
@@ -370,7 +370,6 @@ export function computeTally(store: Store, eventId: string): Tally {
 export function visibleTally(store: Store, actor: Actor, event: EventRow): Tally | null {
   const settings = voteSettings(store, event.id);
   if (!settings) return null;
-  const organizer = actor.user ? rolesIn(store, actor.user.id, event.id).has('organizer') : false;
-  if (!settings.published_at && !organizer) return null;
+  if (!settings.published_at && !actsAsOrganizer(store, actor, event.id, 'read the unpublished vote tally')) return null;
   return computeTally(store, event.id);
 }

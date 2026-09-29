@@ -102,7 +102,7 @@ export const communityRoutes: RouteModule = (router, { store, secret, codeLimite
   router.get('/events/:slug/vote/results', (ctx) => {
     const event = getEvent(store, ctx.params.slug as string);
     const settings = voteSettings(store, event.id);
-    const isOrganizer = ctx.user ? rolesIn(store, ctx.user.id, event.id).has('organizer') : false;
+    const isOrganizer = ctx.user ? rolesIn(store, ctx.user.id, event.id).has('organizer') || Boolean(ctx.user.is_admin) : false;
     ctx.html(voteResultsPage(ctx, event, settings, votePhase(settings, ctx.now), visibleTally(store, ctx.actor, event), isOrganizer));
   });
 

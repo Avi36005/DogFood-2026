@@ -172,7 +172,7 @@ export const publicRoutes: RouteModule = (router, { store }) => {
 
   router.get('/events/:slug/results', (ctx) => {
     const event: EventRow = getEvent(store, ctx.params.slug as string);
-    const isOrganizer = ctx.user ? rolesIn(store, ctx.user.id, event.id).has('organizer') : false;
+    const isOrganizer = ctx.user ? rolesIn(store, ctx.user.id, event.id).has('organizer') || Boolean(ctx.user.is_admin) : false;
     const evidence = currentEvidence(store, event);
     ctx.html(resultsPage(ctx, event, publishedResults(store, event), isOrganizer, evidence ? { signed: verifyText(evidence.documentText, evidence.signature, evidence.publicKey), document: JSON.parse(evidence.documentText) as ResultsDocument } : null));
   });

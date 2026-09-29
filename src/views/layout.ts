@@ -23,7 +23,7 @@ export function page(ctx: Ctx, options: PageOptions): SafeHtml {
   const user = ctx.user;
   const roles = user ? myEventRoles(ctx.store, user.id) : [];
   const judges = roles.some((r) => r.roles.has('judge'));
-  const organizes = roles.some((r) => r.roles.has('organizer'));
+  const organizes = roles.some((r) => r.roles.has('organizer')) || Boolean(user?.is_admin);
   const flash = ctx.takeFlash();
   // On the sign-in and sign-up pages, keep the existing destination instead of nesting ?next=.
   const onAuthPage = /^\/(login|signup)$/.test(ctx.url.pathname);

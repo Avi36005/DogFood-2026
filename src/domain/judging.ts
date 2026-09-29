@@ -3,7 +3,7 @@ import { conflict, notFound, ValidationError } from '../util/errors.ts';
 import { FormReader, type Body } from '../util/form.ts';
 import { hashToken, newId, newToken } from '../util/tokens.ts';
 import { addDays, iso } from '../util/time.ts';
-import { AccessDenied, grantRole, requireOrganizer, requireRole, requireUser, rolesIn } from './access.ts';
+import { AccessDenied, actsAsOrganizer, adminOverride, grantRole, requireOrganizer, requireRole, requireUser, rolesIn } from './access.ts';
 import { ensureUser, findUserByEmail } from './accounts.ts';
 import { actorLabel, record } from './audit.ts';
 import { commitMethodIfFirst } from './commitment.ts';
@@ -340,14 +340,15 @@ function scoreMap(store: Store, assignmentId: string): Map<string, number> {
 }
 
 /**
- * Loads a review for its judge, or read-only for an organizer of the event. Anyone else gets
+ * Loads a review for its judge, or read-only for an organizer of the event (or an administrator,
+ * audited). Anyone else gets
  * 403 whether or not the assignment exists, so the URL cannot be used to probe for ids.
  */
 export function reviewPage(store: Store, actor: Actor, assignmentId: string): ReviewPage {
   const user = requireUser(actor);
   const assignment = store.get<AssignmentRow>('SELECT * FROM assignments WHERE id = ?', [assignmentId]);
   const isOwn = assignment?.judge_id === user.id;
-  const isOrganizer = assignment ? rolesIn(store, user.id, assignment.event_id).has('organizer') : false;
+  const isOrganizer = assignment && !isOwn ? actsAsOrganizer(store, actor, assignment.event_id, `read another judge's review (${assignmentId})`) : false;
   if (!assignment || (!isOwn && !isOrganizer)) {
     throw new AccessDenied('This review belongs to another judge.', {
       eventId: assignment?.event_id ?? null,
@@ -518,6 +519,15 @@ export function judgeScores(store: Store, actor: Actor, query: { judge?: string 
     if (eventIds.length === 0) refuse('Only judges have scores to read.', 'judge scores (they are not a judge)');
   } else {
     const organizes = myRoles.filter((row) => row.role === 'organizer').map((row) => row.event_id);
+    if (user.is_admin) {
+      // Administrators read any judge's scores (FIG. 02), audited in each event they do not organize.
+      const judged = store
+        .all<{ event_id: string }>("SELECT event_id FROM event_roles WHERE user_id = ? AND role = 'judge' ORDER BY event_id", [targetId])
+        .map((row) => row.event_id)
+        .filter((eventId) => !eventFilter || eventId === eventFilter);
+      for (const eventId of judged) if (!organizes.includes(eventId)) adminOverride(store, actor, eventId, `read the scores of ${targetId}`);
+      organizes.push(...judged.filter((eventId) => !organizes.includes(eventId)));
+    }
     if (organizes.length === 0) refuse("You can read only your own scores. Another judge's scores are visible to organizers only.", `the scores of another judge (${targetId})`);
     eventIds = organizes.filter((eventId) => rolesIn(store, targetId, eventId).has('judge'));
     if (eventIds.length === 0) refuse('That person does not judge any event you organize.', `the scores of ${targetId}, who does not judge their events`);

@@ -1,6 +1,6 @@
 import type { Store } from '../db/store.ts';
 import { HttpError, unauthorized } from '../util/errors.ts';
-import { actorLabel, type AuditEntry } from './audit.ts';
+import { actorLabel, record, type AuditEntry } from './audit.ts';
 import type { Actor, EventRow, Role, UserRow } from './types.ts';
 
 /**
@@ -41,13 +41,39 @@ export function requireAdmin(actor: Actor): UserRow {
 }
 
 /**
+ * Instance administrators hold organizer powers in every event, as the DOGFOOD isolation matrix
+ * expects (FIG. 02: an admin may read peer scores, other tracks, aggregates and the audit log).
+ * An administrator who is not an organizer of the event is never silent about it: each use is
+ * written to that event's audit trail with what they did. Returns false for everyone else.
+ */
+export function adminOverride(store: Store, actor: Actor, eventId: string, attempted: string): boolean {
+  const user = actor.user;
+  if (!user?.is_admin) return false;
+  if (rolesIn(store, user.id, eventId).has('organizer')) return true;
+  record(store, actor, {
+    eventId,
+    action: 'admin.access',
+    summary: `${actorLabel(actor)} used administrator access (not an organizer of this event) to ${attempted}.`,
+  });
+  return true;
+}
+
+/** Organizer powers in an event: its organizers, and administrators (audited, see adminOverride). */
+export function actsAsOrganizer(store: Store, actor: Actor, eventId: string, attempted: string): boolean {
+  if (actor.user && rolesIn(store, actor.user.id, eventId).has('organizer')) return true;
+  return adminOverride(store, actor, eventId, attempted);
+}
+
+/**
  * The single gate for event-scoped actions. 401 without a session, 403 with the wrong role,
- * and the 403 is written to the event's audit trail with what was attempted.
+ * and the 403 is written to the event's audit trail with what was attempted. Where the organizer
+ * role would do, an administrator passes too, and that is audited.
  */
 export function requireRole(store: Store, actor: Actor, event: EventRow, roles: Role[], attempted: string): UserRow {
   const user = requireUser(actor);
   const held = rolesIn(store, user.id, event.id);
   if (roles.some((role) => held.has(role))) return user;
+  if (roles.includes('organizer') && adminOverride(store, actor, event.id, attempted)) return user;
   throw new AccessDenied(`This needs the ${roles.join(' or ')} role in ${event.name}.`, {
     eventId: event.id,
     action: 'access.denied',

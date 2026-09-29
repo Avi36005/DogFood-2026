@@ -124,7 +124,7 @@ export const apiRoutes: RouteModule = (router, { store }) => {
     const user = ctx.user;
     let eventRef = ctx.query('event');
     if (!eventRef) {
-      const organized = myEventRoles(store, user.id).filter((e) => e.roles.has('organizer'));
+      const organized = user.is_admin ? listEvents(store).map((event) => ({ event })) : myEventRoles(store, user.id).filter((e) => e.roles.has('organizer'));
       if (organized.length > 1) throw badRequest(`You organize ${organized.length} events; say which with ?event=<id>.`);
       if (!organized[0]) {
         throw new AccessDenied('Only organizers can export data.', {

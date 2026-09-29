@@ -3,7 +3,7 @@ import { auditActions, listAudit, verifyChain } from '../domain/audit.ts';
 import { commitmentStatus } from '../domain/commitment.ts';
 import { pairwiseSummary } from '../domain/compare.ts';
 import { currentEvidence } from '../domain/evidence.ts';
-import { addOrganizer, addPrize, addTrack, closeSubmissionsNow, getEvent, listCriteria, listOrganizers, listPrizes, listTracks, removePrize, removeTrack, updateEvent } from '../domain/events.ts';
+import { addOrganizer, addPrize, addTrack, closeSubmissionsNow, getEvent, listCriteria, listEvents, listOrganizers, listPrizes, listTracks, removePrize, removeTrack, updateEvent } from '../domain/events.ts';
 import { assignManually, autoAssign, inviteJudge, listAssignments, listJudges, removeJudge, setJudgeTracks, unassign } from '../domain/judging.ts';
 import { eventProgress } from '../domain/progress.ts';
 import { chooseLiveSubmission, duplicateGroups, eventProjects } from '../domain/projects.ts';
@@ -49,7 +49,8 @@ export const organizeRoutes: RouteModule = (router, { store, config }) => {
 
   router.get('/organize', (ctx) => {
     if (!ctx.user) throw unauthorized();
-    const events = myEventRoles(store, ctx.user.id).filter((e) => e.roles.has('organizer')).map((e) => e.event);
+    // Administrators hold organizer powers in every event (audited per use), so they see them all.
+    const events = ctx.user.is_admin ? listEvents(store) : myEventRoles(store, ctx.user.id).filter((e) => e.roles.has('organizer')).map((e) => e.event);
     if (events.length === 1 && events[0]) return ctx.redirect(`/organize/${events[0].slug}`);
     ctx.html(organizeHomePage(ctx, events));
   });

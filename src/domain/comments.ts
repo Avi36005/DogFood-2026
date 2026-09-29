@@ -35,7 +35,7 @@ function publicProject(store: Store, projectId: string): ProjectRow {
 }
 
 export function listComments(store: Store, actor: Actor, project: ProjectRow): CommentView[] {
-  const organizer = actor.user ? rolesIn(store, actor.user.id, project.event_id).has('organizer') : false;
+  const organizer = actor.user ? rolesIn(store, actor.user.id, project.event_id).has('organizer') || Boolean(actor.user.is_admin) : false;
   return store
     .all<Omit<CommentView, 'canHide'>>(
       `SELECT c.id, c.author_id, u.name AS author_name, c.body, c.created_at, c.hidden_at, c.hidden_reason
@@ -66,7 +66,7 @@ export function hideComment(store: Store, actor: Actor, commentId: string, body:
     const comment = store.get<{ id: string; author_id: string; project_id: string; hidden_at: string | null }>('SELECT id, author_id, project_id, hidden_at FROM comments WHERE id = ?', [commentId]);
     if (!comment || comment.hidden_at) throw notFound('No such comment.');
     const project = store.get<ProjectRow>('SELECT * FROM projects WHERE id = ?', [comment.project_id]) as ProjectRow;
-    const organizer = rolesIn(store, user.id, project.event_id).has('organizer');
+    const organizer = rolesIn(store, user.id, project.event_id).has('organizer') || Boolean(user.is_admin);
     const author = comment.author_id === user.id;
     if (!organizer && !author) {
       throw new AccessDenied('Only the author or an organizer of this event can take a comment down.', {

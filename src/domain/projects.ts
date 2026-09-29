@@ -3,7 +3,7 @@ import { badRequest, conflict, forbidden, notFound } from '../util/errors.ts';
 import { FormReader, type Body } from '../util/form.ts';
 import { newId } from '../util/tokens.ts';
 import { iso } from '../util/time.ts';
-import { AccessDenied, myEventRoles, requireOrganizer, requireUser, rolesIn } from './access.ts';
+import { AccessDenied, adminOverride, myEventRoles, requireOrganizer, requireUser, rolesIn } from './access.ts';
 import { actorLabel, record } from './audit.ts';
 import { assertSubmissionsOpen, getEvent, listTracks, submissionsOpen } from './events.ts';
 import { isMember, myTeam, teamMembers, type MemberRow } from './teams.ts';
@@ -226,8 +226,8 @@ export function projectPage(store: Store, actor: Actor, projectId: string): Proj
   const event = getEvent(store, project.event_id);
   const roles = actor.user ? rolesIn(store, actor.user.id, event.id) : new Set();
   const member = actor.user ? isMember(store, actor.user.id, project.team_id) : false;
-  const isOrganizer = roles.has('organizer');
   const isPublic = project.status === 'submitted' && !project.superseded_by;
+  const isOrganizer = roles.has('organizer') || (!isPublic && !member && adminOverride(store, actor, event.id, `open the non-public project ${project.id}`));
   if (!isPublic && !member && !isOrganizer) throw notFound('No such project.');
 
   const team = store.get<TeamRow>('SELECT * FROM teams WHERE id = ?', [project.team_id]) as TeamRow;
