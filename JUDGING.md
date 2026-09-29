@@ -49,3 +49,51 @@ queues. [`tests/http/organizer.test.ts`: *auto-assign tops the fixture up*]
 Each event has a rubric of criteria with relative weights and one score scale (1–5 by default).
 A review's score is the weighted mean of its criterion scores:
 
+$$ x = \frac{\sum_c w_c \, v_c}{\sum_c w_c} $$
+
+With weights 2, 1, 1 and scores 4, 5, 3 that is (2·4 + 5 + 3) / 4 = 4.0.
+[`tests/http/lifecycle.test.ts`: *uses the organizer weights 2:1:1*]
+
+- **Raw criterion scores are stored; weighted scores are always computed.** Weights can
+  therefore change after scoring starts, and every change is audited with its before and after
+  values (*"Functionality weight 1 → 3"*).
+- **The set of criteria and the scale lock once the first score exists.** Adding or removing a
+  criterion mid-judging would make early and late reviews incomparable, so the server refuses it.
+  The database refuses any score outside the event's scale with a trigger, whatever the code does.
+- **A published snapshot stores the weights it used**, so a later reweighting never changes a
+  published result silently.
+
+The fixture gives three criteria (`functionality`, `quality`, `innovation`, integers 2–5) and no
+weights. Forgeboard imports them **equally weighted on a 1–5 scale**. Both are assumptions, stated
+here and editable by the organizer.
+
+## 3. Normalization: correcting for harsh and generous judges
+
+### The problem
+
+A project's raw average depends on who happened to review it. In the fixture, judges file between
+1 and 11 reviews each, with a median of 3, and each project sees 2 to 5 of them. A project that
+drew two harsh judges is ranked below an equal project that drew two generous ones.
+
+### The method: additive judge offsets with ridge shrinkage
+
+Forgeboard fits one model to all submitted reviews of current projects at once
+(`src/domain/normalization.ts`):
+
+$$ x_{jp} = \mu + a_p + b_j + \varepsilon_{jp} $$
+
+- μ is the overall mean of all reviews.
+- a<sub>p</sub> is project *p*'s effect: how much better or worse it is than average.
+- b<sub>j</sub> is judge *j*'s offset: positive means generous, negative means harsh.
+
+It minimizes squared error plus a ridge penalty on the judge offsets:
+
+$$ \min_{a,b} \sum_{(j,p)} (x_{jp} - \mu - a_p - b_j)^2 + \lambda \sum_j b_j^2, \qquad \lambda = 2 $$
+
+by alternating exact block updates (coordinate descent) until nothing moves by more than 10<sup>-12</sup>:
+
+$$ a_p = \operatorname{mean}_{j \in J(p)} (x_{jp} - \mu - b_j), \qquad b_j = \frac{\sum_{p \in P(j)} (x_{jp} - \mu - a_p)}{n_j + \lambda} $$
+
+**Projects are ranked by μ + a<sub>p</sub>**: their score with each judge's fitted offset taken
+out, on the same 1–5 scale as the raw mean shown beside it. Ties share a rank (1, 2, 2, 4).
+
