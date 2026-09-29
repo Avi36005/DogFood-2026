@@ -107,3 +107,55 @@ describe('fitOffsets: hand-computed cases', () => {
   });
 });
 
+describe('weightedScore and ranks', () => {
+  const weights = [{ id: 'f', weight: 2 }, { id: 'q', weight: 1 }, { id: 'i', weight: 1 }];
+
+  test('is the weighted mean', () => {
+    close(weightedScore(new Map([['f', 5], ['q', 3], ['i', 1]]), weights) ?? Number.NaN, (2 * 5 + 3 + 1) / 4);
+  });
+
+  test('is null when a criterion is missing', () => {
+    assert.equal(weightedScore(new Map([['f', 5]]), weights), null);
+  });
+
+  test('competition ranking shares ranks on ties', () => {
+    const ranks = competitionRanks(['a', 'b', 'c', 'd'], (x) => ({ a: 5, b: 4, c: 4, d: 3 })[x] as number);
+    assert.deepEqual([...ranks.values()], [1, 2, 2, 4]);
+  });
+});
+
+describe('fitOffsets on the official fixture (regression)', () => {
+  const fixture = JSON.parse(fs.readFileSync(FIXTURES, 'utf8')) as {
+    projects: { id: string; team: string; submitted_at: string }[];
+    scores: { judge: string; project: string; criteria: Record<string, number> }[];
+  };
+  // The duplicate policy removes prj_07 (replaced by prj_41) before fitting, as the portal does.
+  const obs = fixture.scores
+    .filter((s) => s.project !== 'prj_07')
+    .map((s) => ({ judge: s.judge, project: s.project, score: Object.values(s.criteria).reduce((a, b) => a + b, 0) / 3 }));
+  const model = fitOffsets(obs);
+
+  test('uses all 121 reviews of current projects and ranks all 40 of them', () => {
+    assert.equal(obs.length, 121);
+    assert.equal(model.projectEffect.size, 40);
+    assert.ok(model.converged);
+  });
+
+  test('drops exactly one judge: jdg_01, whose only review was of the replaced duplicate', () => {
+    assert.equal(model.judgeOffset.size, 29);
+    assert.equal(model.judgeOffset.has('jdg_01'), false);
+  });
+
+  test('reproduces the documented numbers', () => {
+    close(model.mu, 3.5757575757575757, 1e-12);
+    close(model.judgeOffset.get('jdg_07'), 0.2554, 1e-4); // the constant 4/4/4 judge
+    close(model.judgeOffset.get('jdg_10'), -0.3901, 1e-4); // the harshest
+    close(model.judgeOffset.get('jdg_02'), 0.3880, 1e-4); // the most generous
+    const top = [...model.projectEffect].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([p]) => p);
+    assert.deepEqual(top, ['prj_34', 'prj_11', 'prj_25']);
+  });
+
+  test('keeps every offset inside half a point, as a lightly-reviewed panel should', () => {
+    for (const [judge, offset] of model.judgeOffset) assert.ok(Math.abs(offset) < 0.5, `${judge}: ${offset}`);
+  });
+});
