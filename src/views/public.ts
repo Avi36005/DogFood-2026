@@ -9,7 +9,7 @@ import type { EventRow, PrizeRow, Role, TeamRow, TrackRow } from '../domain/type
 import type { Ctx } from '../http/context.ts';
 import { formatDate, formatUtc } from '../util/time.ts';
 import { button, confirmForm, csrf, empty, formErrors, input, linkButton, notice, num, pageHeader, pill, section, select, stat, textarea, when } from './components.ts';
-import { html, type SafeHtml } from './html.ts';
+import { html, raw, type SafeHtml } from './html.ts';
 import { page } from './layout.ts';
 
 export function phasePill(phase: Phase): SafeHtml {
@@ -24,31 +24,47 @@ export interface LandingData {
   featured: EventRow | null;
 }
 
+/** Line icons for the landing stats (drawn for this page; 24 px grid, currentColor). */
+const ICONS = {
+  "folder": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z\"/><path d=\"m10 13 2 2 4-4\"/></svg>",
+  "clipboard": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect x=\"6\" y=\"4\" width=\"12\" height=\"17\" rx=\"2\"/><path d=\"M9 4h6v3H9z\"/><path d=\"m9 14 2 2 4-4\"/></svg>",
+  "users": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"9\" cy=\"8\" r=\"3.5\"/><path d=\"M2.5 20a6.5 6.5 0 0 1 13 0\"/><path d=\"M16 4.5a3.5 3.5 0 0 1 0 7\"/><path d=\"M18 14a6 6 0 0 1 3.5 6\"/></svg>",
+  "calendar": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect x=\"3.5\" y=\"5\" width=\"17\" height=\"15.5\" rx=\"2\"/><path d=\"M8 3v4M16 3v4M3.5 10h17\"/><path d=\"M8 14h.01M12 14h.01M16 14h.01M8 17.5h.01M12 17.5h.01\"/></svg>"
+} as const;
+
 export function landingPage(ctx: Ctx, data: LandingData): SafeHtml {
-  const { counts, featured } = data;
+  const { counts } = data;
   return page(ctx, {
     title: 'From first commit to final verdict',
     surface: 'landing',
     body: html`
 <section class="hero">
-  <p class="eyebrow">Self-hosted hackathon portal</p>
-  <h1>From first commit<br>to final verdict.</h1>
-  <p class="hero-lead">Teams submit before a deadline that actually holds. Judges score against a weighted rubric and never see each other’s work. The ranking corrects for harsh and generous judges, and the method is written down.</p>
-  <p class="hero-actions">${linkButton('/projects', 'Browse projects', 'primary')} ${featured ? linkButton(`/events/${featured.slug}`, `Open ${featured.name}`, 'ghost') : ''}</p>
+  <h1>From first commit<br>to <span class="accent">final verdict.</span></h1>
+  <p class="hero-lead">Run your hackathon from kickoff to results. Bring teams, submissions and judging into one focused workspace.</p>
+  <p class="hero-actions">${!ctx.user || ctx.user.is_admin ? linkButton('/events/new', 'Create an event', 'primary') : linkButton('/dashboard', 'Open your dashboard', 'primary')} ${linkButton('/projects', 'Explore projects', 'ghost')}</p>
   <dl class="hero-stats" aria-label="What this instance holds">
-    <div><dt>Events</dt><dd>${counts.events}</dd></div>
-    <div><dt>Submitted projects</dt><dd>${counts.projects}</dd></div>
-    <div><dt>Submitted reviews</dt><dd>${counts.reviews}</dd></div>
-    <div><dt>Judges</dt><dd>${counts.judges}</dd></div>
+    <div><dt>Submissions</dt><span class="stat-icon">${raw(ICONS.folder)}</span><dd>${counts.projects}</dd><dd class="caption">Projects submitted</dd></div>
+    <div><dt>Judging</dt><span class="stat-icon">${raw(ICONS.clipboard)}</span><dd>${counts.reviews}</dd><dd class="caption">Reviews completed</dd></div>
+    <div><dt>Panel</dt><span class="stat-icon">${raw(ICONS.users)}</span><dd>${counts.judges}</dd><dd class="caption">Judges on the panel</dd></div>
+    <div><dt>Events</dt><span class="stat-icon">${raw(ICONS.calendar)}</span><dd>${counts.events}</dd><dd class="caption">${counts.events === 1 ? 'Event hosted' : 'Events hosted'}</dd></div>
   </dl>
-  <p class="hero-note">Live counts from this instance’s database${ctx.config.demo ? ', which holds the DOGFOOD fixture data' : ''}.</p>
+  <p class="hero-note">Live counts from ${ctx.config.demo ? 'the demo event' : 'this instance'}</p>
 </section>
+<h2 class="section-title" id="how-it-works">How it works</h2>
+<ol class="steps">
+  <li><strong>Create</strong>Set up an event, its tracks and a weighted rubric in a few minutes.</li>
+  <li><strong>Submit</strong>Teams form by invite link and submit before a deadline the server enforces.</li>
+  <li><strong>Judge</strong>Judges score only what they are assigned; nobody can read another judge's scores.</li>
+  <li><strong>Publish</strong>A ranking that corrects for harsh and generous judges, signed so anyone can check it.</li>
+</ol>
+<h2 class="section-title" id="platform">Platform</h2>
 <section class="features" aria-label="What it does">
   <article><h2>Deadlines that hold</h2><p>Every write checks the server clock inside the same transaction as the write. A late request is refused for being late, by the API as well as the page.</p></article>
   <article><h2>Isolation in the backend</h2><p>A judge’s queries are keyed on their own id. Asking for another judge’s scores returns 403 and lands on the audit trail, whether you use the page or curl.</p></article>
   <article><h2>Judging you can defend</h2><p>Additive judge offsets with ridge shrinkage, chosen by simulation on the fixture’s own judge layout. Raw means sit beside normalized scores, always.</p></article>
   <article><h2>One command, no cloud</h2><p><code>docker compose up</code> starts a seeded portal with the network off. Node’s standard library and SQLite: zero runtime dependencies.</p></article>
 </section>
+<h2 class="section-title" id="judging">Judging</h2>
 <section class="method-teaser">
   <div>
     <p class="eyebrow">The ranking, in one line</p>

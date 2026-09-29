@@ -49,8 +49,11 @@ export function page(ctx: Ctx, options: PageOptions): SafeHtml {
     <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav">Menu</button>
     <nav id="site-nav" class="site-nav" aria-label="Main">
       <div class="nav-main">
-        ${navLink('/projects', 'Projects', options.nav === 'projects')}
-        ${navLink('/events', 'Events', options.nav === 'events')}
+        ${surface === 'landing' && !user
+          ? html`<a href="/#platform">Platform</a><a href="/#how-it-works">How it works</a><a href="/#judging">Judging</a><a href="/about">Open source</a>`
+          : ''}
+        ${surface === 'landing' && !user ? '' : navLink('/projects', 'Projects', options.nav === 'projects')}
+        ${surface === 'landing' && !user ? '' : navLink('/events', 'Events', options.nav === 'events')}
         ${user ? navLink('/dashboard', 'Dashboard', options.nav === 'dashboard') : ''}
         ${judges ? navLink('/judge', 'Judging', options.nav === 'judge') : ''}
         ${organizes ? navLink('/organize', 'Organize', options.nav === 'organize') : ''}
@@ -60,7 +63,9 @@ export function page(ctx: Ctx, options: PageOptions): SafeHtml {
         ${user
           ? html`<a class="nav-me" href="/account"${options.nav === 'account' ? html` aria-current="page"` : ''}>${user.name}</a>
              <form method="post" action="/logout" class="inline-form">${csrf(ctx)}<button class="link-button" type="submit">Sign out</button></form>`
-          : html`<a href="/login?next=${encodeURIComponent(returnTo)}">Sign in</a><a class="btn btn-accent btn-sm" href="/signup?next=${encodeURIComponent(returnTo)}">Create account</a>`}
+          : html`<a href="/login?next=${encodeURIComponent(returnTo)}">Sign in</a>${surface === 'landing'
+              ? html`<a class="btn btn-accent btn-sm" href="/events/new">Create an event</a>`
+              : html`<a class="btn btn-accent btn-sm" href="/signup?next=${encodeURIComponent(returnTo)}">Create account</a>`}`}
       </div>
     </nav>
   </div>
