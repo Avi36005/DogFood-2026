@@ -104,3 +104,79 @@ export function inviteJudge(store: Store, actor: Actor, event: EventRow, body: B
   });
 }
 
+export function setJudgeTracks(store: Store, actor: Actor, event: EventRow, judgeId: string, body: Body): void {
+  requireOrganizer(store, actor, event, `change a judge's tracks in ${event.name}`);
+  const form = new FormReader(body);
+  const trackIds = readTrackIds(form, event, store);
+  form.assertValid();
+  store.tx(() => {
+    if (!rolesIn(store, judgeId, event.id).has('judge')) throw notFound('No such judge.');
+    replaceTracks(store, event.id, judgeId, trackIds);
+    record(store, actor, { eventId: event.id, action: 'judge.tracks_changed', subjectType: 'user', subjectId: judgeId, summary: `Set ${judgeId} to cover ${trackIds.length ? trackIds.join(', ') : 'every track'}.` });
+  });
+}
+
+/** Removes a judge who has not submitted anything. Submitted reviews are evidence and are never deleted. */
+export function removeJudge(store: Store, actor: Actor, event: EventRow, judgeId: string): void {
+  requireOrganizer(store, actor, event, `remove a judge from ${event.name}`);
+  store.tx(() => {
+    if (!rolesIn(store, judgeId, event.id).has('judge')) throw notFound('No such judge.');
+    const submitted = store.get<{ n: number }>(
+      `SELECT count(*) AS n FROM assignments a JOIN reviews r ON r.assignment_id = a.id
+       WHERE a.event_id = ? AND a.judge_id = ? AND r.status = 'submitted'`,
+      [event.id, judgeId],
+    )?.n ?? 0;
+    if (submitted > 0) throw conflict(`This judge has ${submitted} submitted review(s), which stay on record. Unassign their open work instead.`);
+    const removed = store.run('DELETE FROM assignments WHERE event_id = ? AND judge_id = ?', [event.id, judgeId]).changes;
+    store.run('DELETE FROM judge_invites WHERE event_id = ? AND user_id = ?', [event.id, judgeId]);
+    store.run("DELETE FROM event_roles WHERE event_id = ? AND user_id = ? AND role = 'judge'", [event.id, judgeId]);
+    record(store, actor, { eventId: event.id, action: 'judge.removed', subjectType: 'user', subjectId: judgeId, summary: `Removed judge ${judgeId} and ${removed} unfinished assignment(s).` });
+  });
+}
+
+export interface JudgeInviteView {
+  event: EventRow;
+  user: UserRow;
+  tokenHash: string;
+}
+
+export function findJudgeInvite(store: Store, token: string, now: Date): JudgeInviteView | null {
+  const invite = store.get<{ token_hash: string; event_id: string; user_id: string }>(
+    'SELECT token_hash, event_id, user_id FROM judge_invites WHERE token_hash = ? AND expires_at > ? AND accepted_at IS NULL',
+    [hashToken(token), iso(now)],
+  );
+  if (!invite) return null;
+  const user = store.get<UserRow>('SELECT * FROM users WHERE id = ?', [invite.user_id]);
+  if (!user || !rolesIn(store, user.id, invite.event_id).has('judge')) return null;
+  return { event: getEvent(store, invite.event_id), user, tokenHash: invite.token_hash };
+}
+
+/** A new judge claims the invite by choosing a password. Returns the account to sign in. */
+export async function claimJudgeInvite(store: Store, actor: Actor, token: string, password: string): Promise<UserRow> {
+  const problem = passwordProblem(password);
+  if (problem) throw new ValidationError({ password: problem });
+  const passwordHash = await hashPassword(password);
+  return store.tx(() => {
+    const invite = findJudgeInvite(store, token, actor.now);
+    if (!invite) throw conflict('This invite has expired or has already been used. Ask the organizer for a new one.');
+    if (invite.user.password_hash) throw conflict('This account already has a password. Sign in, then open the invite again.');
+    store.run('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, invite.user.id]);
+    store.run('UPDATE judge_invites SET accepted_at = ? WHERE token_hash = ?', [iso(actor.now), invite.tokenHash]);
+    record(store, { ...actor, user: invite.user }, { eventId: invite.event.id, action: 'judge.accepted', subjectType: 'user', subjectId: invite.user.id, summary: `${invite.user.name} accepted the invitation to judge.` });
+    return { ...invite.user, password_hash: passwordHash };
+  });
+}
+
+/** An existing account accepts the invite while signed in as the invited person. */
+export function acceptJudgeInvite(store: Store, actor: Actor, token: string): EventRow {
+  const user = requireUser(actor);
+  return store.tx(() => {
+    const invite = findJudgeInvite(store, token, actor.now);
+    if (!invite) throw conflict('This invite has expired or has already been used. Ask the organizer for a new one.');
+    if (invite.user.id !== user.id) throw conflict(`This invite is for ${invite.user.email}. Sign in as that person to accept it.`);
+    store.run('UPDATE judge_invites SET accepted_at = ? WHERE token_hash = ?', [iso(actor.now), invite.tokenHash]);
+    record(store, actor, { eventId: invite.event.id, action: 'judge.accepted', subjectType: 'user', subjectId: user.id, summary: `${user.name} accepted the invitation to judge.` });
+    return invite.event;
+  });
+}
+
