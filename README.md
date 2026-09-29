@@ -11,7 +11,7 @@ DOGFOOD fixture data.
 | **Tiers** | Claims **T1 and T2**. The official checker says `claimed T1 T2, verified T1 T2` ([`acceptance-report.txt`](acceptance-report.txt)). **T3 is built too**: community voting, comments, hidden results, shuffled ballots and anti-abuse, checked by [`scripts/t3_check.py`](scripts/t3_check.py): 15 of 15 ([`acceptance-report-t3.txt`](acceptance-report-t3.txt)). It is recorded as evidence, not claimed, because the official checker has no T3 checks ([why](#why-t3-is-evidence-not-a-claim)) |
 | **One command** | `docker compose up`: seeded with the DOGFOOD fixtures, works with the network off |
 | **Dependencies** | **Zero at runtime.** Node 24's standard library (`node:http`, `node:sqlite`, `node:crypto`). No `npm install`, no build step |
-| **Tests** | **197 of our own** (`npm test`), plus a 16-check headless browser pass and a network-off proof |
+| **Tests** | **1,264 of our own, all passing** (`npm test`, about 20 s). With the official checker (7), our T3 checker (15) and a headless browser pass (16), that is **1,302 automated checks**, plus a network-off proof, all rerun by CI on every push. [How we tested](#how-we-tested) |
 | **Judging** | Weighted rubric, backend isolation, live dashboard, **additive judge offsets with ridge shrinkage** ([JUDGING.md](JUDGING.md)), **90% rank intervals and podium stability**, a **pairwise Bradley–Terry second opinion** with a judges' **compare mode**, CSV at every stage |
 | **Evidence** | Published results are **signed (Ed25519)** and ship as a **self-verifying capsule** that refits the ranking in any browser, offline. The audit trail is **hash-chained**, and the method is **fixed when the first score arrives** |
 | **Bonus work** | Normalization Proof ([JUDGING.md §3](JUDGING.md#3-normalization-correcting-for-harsh-and-generous-judges)), Pairwise Mode ([JUDGING.md](JUDGING.md#a-second-opinion-pairwise-with-bradleyterry)) and Threat Model ([THREAT-MODEL.md](THREAT-MODEL.md)) |
@@ -32,7 +32,7 @@ DOGFOOD fixture data.
 4. [Who can see what: backend-enforced isolation](#4-who-can-see-what-backend-enforced-isolation)
 5. [Judging integrity in one page](#5-judging-integrity-in-one-page)
 6. [How it is built](#6-how-it-is-built)
-7. [Verification: what we ran and what it said](#7-verification-what-we-ran-and-what-it-said)
+7. [Verification: what we ran and what it said](#7-verification-what-we-ran-and-what-it-said), including [how we tested](#how-we-tested)
 8. [Running it for a real event](#8-running-it-for-a-real-event)
 9. [Getting data in and out](#9-getting-data-in-and-out)
 10. [Developing without Docker](#10-developing-without-docker)
@@ -172,12 +172,12 @@ docker run --rm -v "$PWD":/app -w /app node:24-alpine npm test
 ```
 
 ```text
-ℹ tests 197
-ℹ pass 197
+ℹ tests 1264
+ℹ pass 1264
 ℹ fail 0
 ```
 
-It takes about 16 seconds. The tests start their own servers on random ports with throwaway
+It takes about 20 seconds. The tests start their own servers on random ports with throwaway
 databases, so they never touch the running portal or its data.
 
 ### Step 5: prove the network-off rule (optional)
@@ -493,8 +493,10 @@ the same function serves the HTML form, the JSON API and the tests.
 │   └── util/      errors, forms, CSV, time, tokens
 ├── static/        app.css, app.js (about 70 lines of progressive enhancement), favicon
 ├── tests/
-│   ├── unit/      normalization, uncertainty, pairwise, evidence, assignment, deadline, data, utilities
-│   └── http/      checker, authorization matrix, lifecycle, organizer, security, crawl, buttons,
+│   ├── unit/      properties (random-event invariants, audit tampering), normalization, uncertainty,
+│   │              pairwise, evidence, assignment, deadline, data, utilities
+│   └── http/      fixture sweep (every review, judge and project; signed-results tampering),
+│                  checker, authorization matrix, lifecycle, organizer, security, crawl, buttons,
 │                  evidence (signed results, capsule, CLI), community (voting, codes, comments), compare
 ├── research/      the normalization and pairwise simulations and their seeded output
 ├── docs/screens/  the screenshots in this README
@@ -512,15 +514,39 @@ All of these were run on the final code in this repository.
 | Official checker against a fresh `docker compose up` | **7 of 7 PASS**, `claimed T1 T2, verified T1 T2`, byte-identical to the committed report | `python3 run.py .dogfood.toml` |
 | T3 checks, same style, against `docker compose up` | **15 of 15 PASS** ([`acceptance-report-t3.txt`](acceptance-report-t3.txt)): ballot page public, tally hidden from public and participants, judges refused, own project refused, one ballot per account, shuffled order, comments signed-in and escaped, take-down refused to others, votes CSV, refusals audited | `python3 scripts/t3_check.py .dogfood.toml` |
 | CI on every push | Types, tests, the official checker diffed against the committed report, publish-then-verify of signed results, and the network-off check | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
-| Our test suite | **197 of 197 pass**: about 16 s in `node:24-alpine` | `npm test`, or the Docker command in [step 4](#step-4-run-our-tests-with-nothing-but-docker) |
+| Our test suite | **1,264 of 1,264 pass**: about 20 s in `node:24-alpine` ([how we tested](#how-we-tested)) | `npm test`, or the Docker command in [step 4](#step-4-run-our-tests-with-nothing-but-docker) |
 | Type check | Clean under `strict`, `noUncheckedIndexedAccess` and `erasableSyntaxOnly` | `npm install && npm run typecheck` (TypeScript is a development dependency only) |
 | Real browser | **16 of 16**: sign-in by form, the phone menu, copy buttons, two-step confirms, the live dashboard refresh, keyboard scoring, and no JavaScript or console errors on any page | `npm run check:browser` (needs Chrome) |
 | Network off | Builds with `--network none`, runs with no network interface, serves gallery, scores and CSV; egress fails | `sh scripts/offline-check.sh` |
 | Every page, every role | Visitor, participant, judge and organizer pages at desktop and phone width: no console errors, no broken images, no horizontal scroll | Headless Chrome pass during development |
 
-What the 197 tests cover:
+### How we tested
+
+**1,264 tests, 0 failures, about 20 seconds**, in four layers. Every test starts its own server on
+a random port with a throwaway database, so the suite never touches a running portal. Where a
+test needs an expected value, it computes it from `fixtures.json` itself rather than reading it
+back from the code under test.
+
+| Layer | Tests | What each test checks | File |
+|---|---:|---|---|
+| **Fixture sweep, over HTTP** | **640** | Every one of the fixture's **126 reviews** reaches its own judge exactly as scored (criteria and comment), and appears once in the organizer's reviews export with the right weighted total (252). Each of the **30 judges** lists exactly their own reviews, and is refused all 29 other judges, with every refusal audited (60 tests, 870 refused requests). Each of the **41 projects** has the right public page and gallery link with no judge name or review text on it, a results row that matches an independent recomputation of its raw mean and review count, and a rank consistent with its score (122; the superseded duplicate `prj_07` is checked to be hidden and unranked). The **signed results** are attacked one piece at a time: nudging any of the 40 signed scores breaks the signature; re-signing a promoted score with a stranger's key passes the signature check but fails the refit, for all 40; changing any one of the 121 review inputs fails the fingerprint (205 with the setup checks). One more checks that the import supersedes exactly the duplicate | [`tests/http/sweep.test.ts`](tests/http/sweep.test.ts) |
+| **Property tests on random events** | **288** | 25 seeded random events (8–40 projects, 5–30 judges, planted judge bias), six properties each for the normalization: the fit solves its own normal equations; adding a constant or rescaling every score moves the result exactly as the maths says; review order and judge names change nothing; more shrinkage never enlarges the offsets (150). Six Bradley–Terry properties on 15 events: implied comparisons, convergence, proper win probabilities, order invariance, mirror symmetry, a planted champion ranks first (90). The audit chain pins an edit to each of 24 entries to that entry, and a removal of each of 23 to the entry after it (48) | [`tests/unit/properties.test.ts`](tests/unit/properties.test.ts) |
+| **Authorization matrix** | **177** | Every role (visitor, participant, judge A, judge B, organizer) against every protected T1 and T2 route and action, one test per cell (the T3 and compare-mode refusals have their own tests), so a failure names the exact route and role (176 cells), then a check that none of the refused writes changed any data | [`tests/http/matrix.test.ts`](tests/http/matrix.test.ts) |
+| **Behaviour, lifecycle and security** | **159** | The official checker's seven behaviours with their reasons, the full lifecycle through the real forms, a crawl of every link and button, security, the importer, schema rules, hand-computed maths, certainty, pairwise, T3 and evidence: listed below | the other 17 files in [`tests/`](tests/) |
+
+**Do the tests catch real bugs?** We broke the code on purpose, twice, and ran the suite. Changing
+the judge-offset update from `n + λ` to `n + λ + 0.5` failed **25** property tests (the normal
+equations, on every seed). Letting judges read any peer whose id ends in 9 failed **30** sweep
+tests (every judge's peer check). Both changes were reverted; the numbers above are on the code
+as committed.
+
+**Beyond `npm test`**, every push reruns in CI: the official `run.py` (**7 of 7**, byte-identical
+to the committed report), our T3 checker (**15 of 15**), publish-then-verify of the signed results
+and the audit chain, and the network-off build and run. The **16-check** headless Chrome pass
+(`npm run check:browser`) covers what only a real browser shows.
+
+What the other 159 tests cover:
 - **The seven checker behaviours**, with the *reason* behind each answer, not only the status code
-- **An authorization matrix**: every role against every protected route and action
 - **A full event lifecycle through the real forms**: create → teams → submit → invite judges → close → auto-assign → score → publish
 - **A crawl of every link and a press of every button**, as every role
 - **Security**: CSRF, cross-origin posts, session cookies, open redirects, rate limiting, escaping, and demo mode being off by default
@@ -642,7 +668,7 @@ You need **Node 24 or later**: it runs TypeScript directly and ships SQLite.
 ```sh
 FORGEBOARD_DEMO=1 npm start      # http://localhost:8080, data in ./data/forgeboard.db
 npm run dev                      # the same, restarting on changes, data in ./data/dev.db
-npm test                         # 197 tests
+npm test                         # 1,264 tests
 npm install && npm run typecheck   # type check; installs TypeScript, the only (dev) dependency
 npm run check:browser            # the 16 headless Chrome checks
 npm run check:offline            # the network-off proof (needs Docker)
@@ -673,7 +699,7 @@ forward-only migration, `src/db/migrations/002_….sql`; the shipped schema is n
 
 | Criterion | Weight | Evidence in this repository |
 |---|---|---|
-| **Tier completion and correctness** | 40% | [`acceptance-report.txt`](acceptance-report.txt): 7 of 7. [`.dogfood.toml`](.dogfood.toml) claims exactly T1 and T2; T3 is built with its own 15-check receipt ([`acceptance-report-t3.txt`](acceptance-report-t3.txt)), and [section 13](#13-honest-limitations) lists what is missing. 197 tests, including the lifecycle through the real forms |
+| **Tier completion and correctness** | 40% | [`acceptance-report.txt`](acceptance-report.txt): 7 of 7. [`.dogfood.toml`](.dogfood.toml) claims exactly T1 and T2; T3 is built with its own 15-check receipt ([`acceptance-report-t3.txt`](acceptance-report-t3.txt)), and [section 13](#13-honest-limitations) lists what is missing. 1,264 tests ([how we tested](#how-we-tested)), including every fixture review, judge and project swept over HTTP and the lifecycle through the real forms |
 | **Judging integrity** | 25% | Isolation in the domain layer, tested as a matrix ([section 4](#4-who-can-see-what-backend-enforced-isolation)). A normalization method with evidence and stated limits, rank intervals and a leave-one-judge-out check ([JUDGING.md](JUDGING.md)). The method fixed when scoring starts. Signed results that verify and refit offline. A hash-chained, append-only audit trail an organizer reads in plain sentences, including refused attempts. Abuse considered up front ([THREAT-MODEL.md](THREAT-MODEL.md)) |
 | **Adoptability and operability** | 20% | One command, network off, seeded with the fixtures. Zero runtime dependencies. Production steps, settings, backup and recovery ([section 8](#8-running-it-for-a-real-event)). Import and export at every stage ([section 9](#9-getting-data-in-and-out)). MIT |
 | **Code quality and innovation** | 15% | One-way layering, a schema that enforces its own invariants ([DATA-MODEL.md](DATA-MODEL.md)), strict TypeScript with no build step, and the decisions in [ARCHITECTURE.md](ARCHITECTURE.md), each with the cost we accepted |
