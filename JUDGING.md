@@ -147,3 +147,53 @@ every time (`research/normalization-study-output.md`).
 | **E. Offsets, λ = 2 (Forgeboard)** | **0.867** | **0.857** | **0.819** | 0.900 |
 | F. Offsets, λ = 5 | 0.860 | 0.852 | 0.801 | 0.903 |
 
+*Mean Spearman rank correlation with the true quality. True top five recovered by E: 67%, 66%
+and 61% in the biased scenarios, against 64%, 64% and 56% for raw means.*
+
+What the table says:
+- **Per-judge z-scores do worse than doing nothing** unless bias is strong. To standardize a
+  judge you need their mean and spread, and a spread estimated from three reviews is mostly
+  noise. They lose even in the scenario built for them, where judges truly differ in spread.
+- **Unshrunk offsets are the worst option.** They overfit the judges with one or two reviews.
+- **Shrunk offsets win in every biased scenario**, and when there is no bias at all they cost
+  almost nothing (0.900 against 0.904).
+- **λ is not a knife-edge choice.** Rank correlation is flat between λ = 0.5 and λ = 3 (0.862 to
+  0.865), and λ = 2 sits in that plateau.
+
+| λ | 0 | 0.5 | 1 | **2** | 3 | 5 | 10 | 25 |
+|---|---|---|---|---|---|---|---|---|
+| rank correlation | 0.699 | 0.863 | 0.865 | **0.864** | 0.862 | 0.858 | 0.852 | 0.848 |
+
+Assumptions of the simulation: quality SD 0.7, judge bias SD 0.5 (0.8 when strong), per-criterion
+noise SD 0.8, scores rounded and clamped to 1–5. They are plausible for a 1–5 hackathon rubric
+and they are assumptions. The code is short so anyone can change them and rerun.
+
+### On the fixture
+
+| | |
+|---|---|
+| Reviews used | 121 (the 126 in the file, minus the 5 on the replaced duplicate `prj_07`) |
+| Judges in the fit | 29 (`jdg_01`'s only review was of `prj_07`) |
+| Overall mean μ | 3.576 |
+| Projects that change rank against the raw mean | 29 of 40, by at most 6 places |
+| Harshest judges | `jdg_10` −0.39 (3 reviews), `jdg_27` −0.29 (2), `jdg_25` −0.25 (5) |
+| Most generous judges | `jdg_02` +0.39 (6), `jdg_15` +0.37 (6), `jdg_13` +0.27 (3) |
+
+Top five: 1 Iron Switch (4.303, raw 4.333), 2 Salt Ledger (4.291, raw 4.333, tied first on raw
+mean), 3 Dry Relay (4.185, raw rank 4), 4 Salt Loom (4.088, raw rank 5), 5 Salt Kiln (4.068, raw
+rank 6). Raw means always appear beside normalized scores: in the organizer preview, the public
+results and the results CSV. [`tests/unit/normalization.test.ts`: *reproduces the documented numbers*]
+
+### Limits, stated plainly
+
+- **This is a model fit, not proof of fairness.** A judge whose projects were all genuinely
+  strong is indistinguishable from a generous judge, and will be corrected as one. The model
+  can only separate "strong project" from "generous judge" through judges who saw overlapping
+  projects. The fixture has that overlap, but a thinly connected event has less.
+- **It corrects level, not spread.** A judge who uses only 3–4 and one who uses 1–5 are both
+  treated as shifted, not squeezed. The simulation shows that with this little data per judge,
+  modelling spread costs more than it gains.
+- **λ = 2 was chosen by simulation under stated assumptions**, not derived from first principles.
+- **Few reviews mean wide uncertainty.** A project ranked on two reviews is flagged "few reviews"
+  (fewer than 2 is the threshold; none on this fixture), and its position should be read with that in mind.
+
