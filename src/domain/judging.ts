@@ -180,3 +180,78 @@ export function acceptJudgeInvite(store: Store, actor: Actor, token: string): Ev
   });
 }
 
+// Assignments -------------------------------------------------------------------------
+
+export interface AssignmentView extends AssignmentRow {
+  project_title: string;
+  project_status: string;
+  superseded_by: string | null;
+  track_id: string | null;
+  judge_name: string;
+  review_status: 'draft' | 'submitted' | null;
+}
+
+export function listAssignments(store: Store, eventId: string): AssignmentView[] {
+  return store.all<AssignmentView>(
+    `SELECT a.*, p.title AS project_title, p.status AS project_status, p.superseded_by, p.track_id, u.name AS judge_name, r.status AS review_status
+     FROM assignments a JOIN projects p ON p.id = a.project_id JOIN users u ON u.id = a.judge_id
+     LEFT JOIN reviews r ON r.assignment_id = a.id
+     WHERE a.event_id = ? ORDER BY p.title, u.name`,
+    [eventId],
+  );
+}
+
+/** Judges who are on a project's team: always a conflict, whatever the role table says. */
+function conflictedJudges(store: Store, projectId: string): Set<string> {
+  return new Set(
+    store
+      .all<{ user_id: string }>('SELECT m.user_id FROM team_members m JOIN projects p ON p.team_id = m.team_id WHERE p.id = ?', [projectId])
+      .map((row) => row.user_id),
+  );
+}
+
+function rankableProjects(store: Store, eventId: string): ProjectRow[] {
+  return store.all<ProjectRow>(
+    "SELECT * FROM projects WHERE event_id = ? AND status = 'submitted' AND superseded_by IS NULL ORDER BY id",
+    [eventId],
+  );
+}
+
+export function autoAssign(store: Store, actor: Actor, event: EventRow, options: { maxLoad?: number } = {}): { created: number; shortfalls: (Shortfall & { title: string })[] } {
+  const organizer = requireOrganizer(store, actor, event, `auto-assign judges in ${event.name}`);
+  return store.tx(() => {
+    const projects = rankableProjects(store, event.id);
+    const existing = listAssignments(store, event.id);
+    const judges: PlanJudge[] = listJudges(store, event.id).map((j) => ({
+      id: j.id,
+      trackIds: new Set(j.trackIds),
+      load: existing.filter((a) => a.judge_id === j.id).length,
+    }));
+    const planProjects: PlanProject[] = projects.map((p) => ({
+      id: p.id,
+      trackId: p.track_id,
+      assignedJudges: new Set(existing.filter((a) => a.project_id === p.id).map((a) => a.judge_id)),
+      conflictedJudges: conflictedJudges(store, p.id),
+    }));
+    const plan = planAssignments(planProjects, judges, { target: event.reviews_per_project, maxLoad: options.maxLoad, seed: event.id });
+    const now = iso(actor.now);
+    for (const { projectId, judgeId } of plan.assignments) {
+      store.run(
+        "INSERT INTO assignments (id, event_id, project_id, judge_id, source, created_by, created_at) VALUES (?, ?, ?, ?, 'auto', ?, ?)",
+        [newId('asg'), event.id, projectId, judgeId, organizer.id, now],
+      );
+    }
+    const titles = new Map(projects.map((p) => [p.id, p.title]));
+    const shortfalls = plan.shortfalls.map((s) => ({ ...s, title: titles.get(s.projectId) ?? s.projectId }));
+    record(store, actor, {
+      eventId: event.id,
+      action: 'assignment.auto',
+      subjectType: 'event',
+      subjectId: event.id,
+      summary: `Auto-assigned ${plan.assignments.length} review slot(s) toward ${event.reviews_per_project} reviews per project; ${shortfalls.length} project(s) still short.`,
+      detail: { created: plan.assignments, shortfalls: plan.shortfalls },
+    });
+    return { created: plan.assignments.length, shortfalls };
+  });
+}
+
