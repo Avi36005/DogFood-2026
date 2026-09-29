@@ -338,3 +338,104 @@ function scoreMap(store: Store, assignmentId: string): Map<string, number> {
   );
 }
 
+/**
+ * Loads a review for its judge, or read-only for an organizer of the event. Anyone else gets
+ * 403 whether or not the assignment exists, so the URL cannot be used to probe for ids.
+ */
+export function reviewPage(store: Store, actor: Actor, assignmentId: string): ReviewPage {
+  const user = requireUser(actor);
+  const assignment = store.get<AssignmentRow>('SELECT * FROM assignments WHERE id = ?', [assignmentId]);
+  const isOwn = assignment?.judge_id === user.id;
+  const isOrganizer = assignment ? rolesIn(store, user.id, assignment.event_id).has('organizer') : false;
+  if (!assignment || (!isOwn && !isOrganizer)) {
+    throw new AccessDenied('This review belongs to another judge.', {
+      eventId: assignment?.event_id ?? null,
+      action: 'access.denied',
+      subjectType: 'assignment',
+      subjectId: assignmentId,
+      summary: `${actorLabel(actor)} was refused a review that is not theirs (${assignmentId}).`,
+    });
+  }
+  const event = getEvent(store, assignment.event_id);
+  const project = store.get<ProjectRow & { team_name: string; track_name: string | null }>(
+    `SELECT p.*, t.name AS team_name, tr.name AS track_name FROM projects p JOIN teams t ON t.id = p.team_id
+     LEFT JOIN tracks tr ON tr.id = p.track_id WHERE p.id = ?`,
+    [assignment.project_id],
+  );
+  if (!project) throw notFound('No such project.');
+  const review = store.get<ReviewRow>('SELECT * FROM reviews WHERE assignment_id = ?', [assignment.id]) ?? null;
+  const live = project.status === 'submitted' && !project.superseded_by;
+  return {
+    assignment,
+    event,
+    project,
+    criteria: listCriteria(store, event.id),
+    review,
+    scores: scoreMap(store, assignment.id),
+    isOwn,
+    canEdit: isOwn && live && judgingOpen(event, actor.now),
+  };
+}
+
+/** Saves a draft or submits. Only the assigned judge can write; organizers cannot score on anyone's behalf. */
+export function saveReview(store: Store, actor: Actor, assignmentId: string, body: Body): { submitted: boolean; project: string } {
+  return store.tx(() => {
+    const page = reviewPage(store, actor, assignmentId);
+    if (!page.isOwn) {
+      throw new AccessDenied('Only the assigned judge can score this project.', {
+        eventId: page.event.id,
+        action: 'access.denied',
+        subjectType: 'assignment',
+        subjectId: assignmentId,
+        summary: `${actorLabel(actor)} was refused: write a score on another judge's review of “${page.project.title}”.`,
+      });
+    }
+    assertJudgingOpen(page.event, actor.now);
+    if (page.project.status !== 'submitted' || page.project.superseded_by) throw conflict('This project was withdrawn or replaced, so it no longer takes reviews.');
+
+    const form = new FormReader(body);
+    const submit = form.raw('intent') === 'submit';
+    const values = new Map<string, number>();
+    for (const criterion of page.criteria) {
+      const field = `score_${criterion.key}`;
+      if (form.raw(field).trim() === '') {
+        if (submit) form.fail(field, `Score ${criterion.name} to submit.`);
+        continue;
+      }
+      values.set(criterion.id, form.int(field, { label: criterion.name, min: page.event.score_min, max: page.event.score_max }));
+    }
+    const comment = form.text('comment', { label: 'Comment', max: 5000 });
+    form.assertValid();
+
+    const now = iso(actor.now);
+    const wasSubmitted = page.review?.status === 'submitted';
+    // Once submitted, a review stays submitted: a later save is an edit, not a retraction.
+    const status = submit || wasSubmitted ? 'submitted' : 'draft';
+    if (status === 'submitted' && values.size < page.criteria.length) {
+      throw new ValidationError(Object.fromEntries(page.criteria.filter((c) => !values.has(c.id)).map((c) => [`score_${c.key}`, `Score ${c.name} to submit.`])));
+    }
+    store.run(
+      `INSERT INTO reviews (assignment_id, status, comment, submitted_at, updated_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (assignment_id) DO UPDATE SET status = excluded.status, comment = excluded.comment,
+         submitted_at = coalesce(reviews.submitted_at, excluded.submitted_at), updated_at = excluded.updated_at`,
+      [assignmentId, status, comment, status === 'submitted' ? now : null, now],
+    );
+    store.run('DELETE FROM review_scores WHERE assignment_id = ?', [assignmentId]);
+    for (const [criterionId, value] of values) {
+      store.run('INSERT INTO review_scores (assignment_id, criterion_id, value) VALUES (?, ?, ?)', [assignmentId, criterionId, value]);
+    }
+    const verb = status === 'draft' ? 'saved a draft review of' : wasSubmitted ? 'revised their review of' : 'submitted a review of';
+    record(store, actor, {
+      eventId: page.event.id,
+      action: status === 'draft' ? 'review.draft' : wasSubmitted ? 'review.revised' : 'review.submitted',
+      subjectType: 'assignment',
+      subjectId: assignmentId,
+      summary: `${actor.user?.name} ${verb} “${page.project.title}”.`,
+      detail: Object.fromEntries(page.criteria.map((c) => [c.key, values.get(c.id) ?? null])),
+    });
+    return { submitted: status === 'submitted', project: page.project.id };
+  });
+}
+
+// The scores API --------------------------------------------------------------------------
+
