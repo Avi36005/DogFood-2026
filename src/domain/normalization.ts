@@ -51,3 +51,89 @@ export interface FitOptions {
   tolerance?: number;
 }
 
+export function fitOffsets(observations: readonly Observation[], options: FitOptions = {}): OffsetModel {
+  const lambda = options.lambda ?? DEFAULT_LAMBDA;
+  const maxIterations = options.maxIterations ?? 10_000;
+  const tolerance = options.tolerance ?? 1e-12;
+  if (lambda < 0 || !Number.isFinite(lambda)) throw new RangeError('lambda must be a non-negative number');
+
+  const byProject = new Map<string, Observation[]>();
+  const byJudge = new Map<string, Observation[]>();
+  for (const obs of observations) {
+    if (!Number.isFinite(obs.score)) throw new RangeError(`score for ${obs.judge}/${obs.project} is not a number`);
+    push(byProject, obs.project, obs);
+    push(byJudge, obs.judge, obs);
+  }
+  // Sorted keys make every run visit the data in the same order: same input, same bits out.
+  const projects = [...byProject.keys()].sort();
+  const judges = [...byJudge.keys()].sort();
+  const mu = observations.length ? observations.reduce((sum, o) => sum + o.score, 0) / observations.length : 0;
+  const a = new Map(projects.map((p) => [p, 0]));
+  const b = new Map(judges.map((j) => [j, 0]));
+
+  let iterations = 0;
+  let converged = observations.length === 0;
+  while (!converged && iterations < maxIterations) {
+    iterations++;
+    let change = 0;
+    for (const p of projects) {
+      const reviews = byProject.get(p) ?? [];
+      const next = reviews.reduce((sum, o) => sum + (o.score - mu - (b.get(o.judge) ?? 0)), 0) / reviews.length;
+      change = Math.max(change, Math.abs(next - (a.get(p) ?? 0)));
+      a.set(p, next);
+    }
+    for (const j of judges) {
+      const reviews = byJudge.get(j) ?? [];
+      const next = reviews.reduce((sum, o) => sum + (o.score - mu - (a.get(o.project) ?? 0)), 0) / (reviews.length + lambda);
+      change = Math.max(change, Math.abs(next - (b.get(j) ?? 0)));
+      b.set(j, next);
+    }
+    if (lambda === 0) {
+      // Without shrinkage the model is only identified up to a constant; pin the offsets to mean zero.
+      const shift = judges.reduce((sum, j) => sum + (b.get(j) ?? 0), 0) / (judges.length || 1);
+      for (const j of judges) b.set(j, (b.get(j) ?? 0) - shift);
+      for (const p of projects) a.set(p, (a.get(p) ?? 0) + shift);
+    }
+    converged = change < tolerance;
+  }
+
+  return { method: METHOD, lambda, mu, projectEffect: a, judgeOffset: b, iterations, converged };
+}
+
+function push<K, V>(map: Map<K, V[]>, key: K, value: V): void {
+  const list = map.get(key);
+  if (list) list.push(value);
+  else map.set(key, [value]);
+}
+
+/** Weighted mean of criterion values: sum(w * v) / sum(w). Every criterion must be present. */
+export function weightedScore(values: ReadonlyMap<string, number>, weights: readonly { id: string; weight: number }[]): number | null {
+  let total = 0;
+  let weightSum = 0;
+  for (const { id, weight } of weights) {
+    const value = values.get(id);
+    if (value === undefined) return null;
+    total += weight * value;
+    weightSum += weight;
+  }
+  return weightSum > 0 ? total / weightSum : null;
+}
+
+export function mean(values: readonly number[]): number {
+  return values.length ? values.reduce((sum, v) => sum + v, 0) / values.length : Number.NaN;
+}
+
+/** Competition ranking (1, 2, 2, 4): equal values share a rank; ties are broken for display only. */
+export function competitionRanks<T>(items: readonly T[], value: (item: T) => number): Map<T, number> {
+  const ranks = new Map<T, number>();
+  let previous: number | null = null;
+  let previousRank = 0;
+  items.forEach((item, index) => {
+    const v = value(item);
+    const rank = previous !== null && Math.abs(v - previous) < 1e-9 ? previousRank : index + 1;
+    ranks.set(item, rank);
+    previous = v;
+    previousRank = rank;
+  });
+  return ranks;
+}
