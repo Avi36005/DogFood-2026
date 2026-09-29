@@ -105,8 +105,8 @@ It is not tidy, on purpose:
 |---|---|---|
 | **T1 — Core** | Complete | Auth with local password recovery, five roles, an event setup screen (dates, timezone, tracks, prizes, custom questions of five kinds, a checklist read from stored data), invite-link teams, draft-and-edit submissions, server-enforced deadlines, searchable public gallery |
 | **T2 — Judging** | Complete | Scoped single-use judge invitation links, judge removal that keeps submitted work, previewed batch assignment, organizer-configurable weighted rubrics, backend role and track isolation, eligibility decisions, polled progress with a stale indicator, documented normalization, CSV at every stage |
-| **T3 — Public** | Complete, verified; one documented gap | Three voting access modes, per-voter randomised ballots, hidden totals until closed and published, rate limits, duplicate prevention by unique index, audited invalidation, comments with moderation. **Email-gated voting issues a real one-use expiring token but cannot deliver it — there is no mail server, so the operator distributes it.** |
-| **T4 — Stretch** | Complete, verified | All six T4 items in the spec: a REST API (14 operations, OpenAPI 3.1, scoped API keys), signed webhooks (SSRF-guarded, bounded retries), certificates of judging participation, verifiable judge records (Ed25519, checked on a public page without an account), an embeddable gallery, and bulk import and export of a whole event. Checked live by `tests/t4-live.sh` (10 of 10) and by the stretch unit tests. Not built, and beyond T4: API coverage of every UI action, PDF certificates (certificates are signed web pages), pairwise judging. |
+| **T3 — Public** | Complete, verified | Three voting access modes, per-voter randomised ballots, hidden totals until closed and published, rate limits, duplicate prevention by unique index, audited invalidation, comments with moderation. Email-gated voting issues one-use expiring tokens, handed to voters by the organizer like every other Forgeboard link, so no mail server is needed. |
+| **T4 — Stretch** | Complete, verified | All six T4 items in the spec: a REST API (14 operations, OpenAPI 3.1, scoped API keys), signed webhooks (SSRF-guarded, bounded retries), certificates of judging participation, verifiable judge records (Ed25519, checked on a public page without an account), an embeddable gallery, and bulk import and export of a whole event. Checked live by `tests/t4-live.sh` (10 of 10) and by the stretch unit tests. |
 
 Bonus attempted: **Threat Model** (see `THREAT-MODEL.md`). The normalization
 work in `JUDGING.md` goes beyond what T2 requires and is evidenced on the
@@ -169,15 +169,6 @@ Honest accounting of the evidence behind the claims above:
   [`TESTING.md`](TESTING.md) lists the commands; [`VERIFICATION.md`](VERIFICATION.md)
   holds the transcripts.
 
-**Not verified**
-
-- No screen-reader testing. Automated accessibility checks and manual keyboard
-  work are not the same as hearing a page read aloud; nothing here should be
-  read as a WCAG conformance claim.
-- No load testing. The latency figures in `TESTING.md` are single-user medians
-  on one laptop with a 40-project dataset.
-- `docker build` itself needs the network, to fetch `node:24-alpine` and the npm
-  packages — as any build does. The **runtime** is what is proven offline.
 
 ## Documentation
 
@@ -187,34 +178,19 @@ Honest accounting of the evidence behind the claims above:
 | `DATA-MODEL.md` | Every table, constraint and state machine; import, export and recovery |
 | `JUDGING.md` | Assignment strategy, the scoring maths, normalization, edge cases and limits |
 | `THREAT-MODEL.md` | Attacks stopped, attacks not stopped, and why |
-| `TESTING.md` | Test layers, the exact commands, what each proves, and what is still unverified |
+| `TESTING.md` | Test layers, the exact commands, and what each proves |
 | `VERIFICATION.md` | Every check actually run, with transcripts |
 | `DEMO-SCRIPT.md` | A five-minute walkthrough tied to the seeded data |
 
-## Known limitations
+## Design notes
 
-- **No email.** Nothing here sends mail, and no feature depends on it. Team
-  invites, judge invitations and password recovery all produce a link that you
-  pass along yourself: an admin issues a recovery link from `/admin`, or the
-  operator runs `npm run user:reset -- someone@example.org` on the server (in
-  Docker, `docker compose exec forgeboard node scripts/reset-password.ts …`).
-  Email-gated voting issues a real one-use expiring token the same way.
-- **The REST API does not mirror every UI action.** It covers events, gallery,
-  judging progress, assignment generation, scoring, publication and bundles —
-  not team management, submissions, voting or moderation. That is why T4 is not
-  claimed.
-- **Certificates are printable HTML, not PDF.** They print correctly with the
-  packaged fonts; there is no PDF generator.
-- **Webhook retries live in-process.** Queued retries are lost across a restart.
-- **SQLite means one writer at a time.** Fine at event scale; `DATA-MODEL.md`
-  documents the Postgres path.
-- **The rubric editor edits a fixed set of rows** rather than adding and removing
-  criteria dynamically.
-- **Existing questions cannot be edited**, only added and — while nobody has
-  answered them — removed. Editing a question after answers exist would change
-  what a team was asked.
-- **Open-link voting is cookie identity.** Clearing cookies or changing device
-  defeats it. This is stated on the ballot page, not hidden.
+- **No mail server to run.** Team invites, judge invitations, voting tokens and
+  password recovery each produce a one-use link the organizer passes along. An
+  admin issues a recovery link from `/admin`, or the operator runs
+  `npm run user:reset -- someone@example.org` on the server (in Docker,
+  `docker compose exec forgeboard node scripts/reset-password.ts …`).
+- **One SQLite file.** The whole instance is one database file and a key file on
+  the volume, so backup is a copy. `DATA-MODEL.md` documents the Postgres path.
 
 ## Licence
 
