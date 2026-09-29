@@ -70,4 +70,67 @@ export const apiRoutes: RouteModule = (router, { store }) => {
       counts: eventCounts(store, event.id),
     });
   });
+
+  router.get('/api/events/:id/results', (ctx) => {
+    const event = getEvent(store, ctx.params.id as string);
+    const results = publishedResults(store, event);
+    if (!results) return ctx.json({ published: false, message: 'Results are hidden until the organizers publish them.' });
+    ctx.json({ published: true, snapshot: results.snapshot, rows: results.rows });
+  });
+
+  router.get('/api/events/:id/progress', (ctx) => {
+    const event = getEvent(store, ctx.params.id as string);
+    requireOrganizer(store, ctx.actor, event, 'read judging progress through the API');
+    ctx.json(eventProgress(store, event));
+  });
+
+  router.get('/api/projects', (ctx) => {
+    const sort = ctx.query('sort');
+    const result = gallery(store, {
+      q: ctx.query('q') ?? undefined,
+      event: ctx.query('event') ?? undefined,
+      track: ctx.query('track') ?? undefined,
+      sort: sort === 'newest' || sort === 'title' ? sort : 'oldest',
+      page: Number(ctx.query('page') ?? 1) || 1,
+    });
+    ctx.json({
+      ...result,
+      items: result.items.map((p) => ({
+        id: p.id, title: p.title, summary: p.summary, team: p.team_name, track: p.track_name, event: p.event_slug,
+        repo_url: p.repo_url, demo_url: p.demo_url, video_url: p.video_url, submitted_at: p.submitted_at, rank: p.rank,
+      })),
+    });
+  });
+
+  router.get('/api/projects/:id', (ctx) => {
+    const view = projectPage(store, ctx.actor, ctx.params.id as string);
+    ctx.json({ project: view.project, team: { id: view.team.id, name: view.team.name, members: view.members.map((m) => m.name) }, track: view.track?.name ?? null, event: view.event.slug });
+  });
+
+  router.get('/api/judge/scores', (ctx) => {
+    ctx.json(judgeScores(store, ctx.actor, { judge: ctx.query('judge'), event: ctx.query('event') }));
+  });
+
+  /** CSV for organizers. Without ?event= it uses the one event the caller organizes. */
+  router.get('/api/export.csv', (ctx: Ctx) => {
+    if (!ctx.user) throw unauthorized();
+    const user = ctx.user;
+    let eventRef = ctx.query('event');
+    if (!eventRef) {
+      const organized = myEventRoles(store, user.id).filter((e) => e.roles.has('organizer'));
+      if (organized.length > 1) throw badRequest(`You organize ${organized.length} events; say which with ?event=<id>.`);
+      if (!organized[0]) {
+        throw new AccessDenied('Only organizers can export data.', {
+          eventId: myEventRoles(store, user.id)[0]?.event.id ?? null,
+          action: 'access.denied',
+          subjectType: 'export',
+          summary: `${actorLabel(ctx.actor)} was refused a CSV export (they organize no event).`,
+        });
+      }
+      eventRef = organized[0].event.id;
+    }
+    const event = getEvent(store, eventRef);
+    const { filename, body } = exportCsv(store, ctx.actor, event, ctx.query('kind') ?? 'results');
+    ctx.csv(filename, body);
+  });
 };
