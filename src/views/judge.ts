@@ -55,3 +55,92 @@ ${items.length === 0
   });
 }
 
+export function reviewFormPage(ctx: Ctx, view: ReviewPage, options: { errors?: Record<string, string>; values?: Record<string, string>; nextId?: string | null } = {}): SafeHtml {
+  const { project, event, criteria } = view;
+  const errors = options.errors ?? {};
+  const valueOf = (key: string, id: string) => options.values?.[`score_${key}`] ?? (view.scores.has(id) ? String(view.scores.get(id)) : '');
+  const scale = Array.from({ length: event.score_max - event.score_min + 1 }, (_, i) => event.score_min + i);
+  const links = [['Repository', project.repo_url], ['Demo', project.demo_url], ['Video', project.video_url]].filter(([, url]) => url);
+  const readOnlyReason = !view.isOwn
+    ? 'You are viewing this review as an organizer. Only the assigned judge can change it.'
+    : project.status !== 'submitted' || project.superseded_by
+      ? 'This project was withdrawn or replaced, so it no longer takes reviews.'
+      : !view.canEdit
+        ? phaseOf(event, ctx.now).key === 'open'
+          ? `Judging opens when submissions close, ${formatUtc(event.submissions_close_at)}.`
+          : 'Judging has closed, so this review is final.'
+        : null;
+
+  return page(ctx, {
+    title: `Review: ${project.title}`,
+    nav: view.isOwn ? 'judge' : 'organize',
+    wide: true,
+    body: html`
+${pageHeader(project.title, {
+  eyebrow: html`<a href="${view.isOwn ? `/judge/${event.slug}` : `/organize/${event.slug}/assignments`}">${view.isOwn ? 'Your queue' : 'Assignments'}</a> · ${project.track_name ?? event.name}`,
+  lead: project.summary,
+})}
+<div class="review-layout">
+  <article class="review-project">
+    ${section('Project', html`
+      <dl class="facts">
+        <div><dt>Team</dt><dd>${project.team_name}</dd></div>
+        <div><dt>Track</dt><dd>${project.track_name ?? '–'}</dd></div>
+        <div><dt>Submitted</dt><dd>${when(project.submitted_at, ctx.now)}</dd></div>
+      </dl>
+      ${project.description ? html`<div class="prose">${project.description}</div>` : html`<p class="muted">No description was given.</p>`}
+      ${links.length ? html`<ul class="link-list">${links.map(([label, url]) => html`<li><span>${label}</span> <a href="${url}" rel="nofollow noopener ugc">${url}</a></li>`)}</ul>` : ''}`)}
+  </article>
+  <aside class="review-ballot">
+    ${raw(readOnlyReason ? '<div class="panel ballot">' : '')}${readOnlyReason ? '' : html`<form method="post" action="/judge/reviews/${view.assignment.id}" class="panel ballot" novalidate>`}
+      <div class="panel-head"><h2>Your scores</h2>${view.review ? pill(view.review.status, view.review.status === 'submitted' ? 'success' : 'warn') : pill('not started', 'info')}</div>
+      ${readOnlyReason ? notice('info', readOnlyReason) : ''}
+      ${formErrors(errors)}
+      ${readOnlyReason ? '' : csrf(ctx)}
+      ${criteria.map((c) => {
+        const current = valueOf(c.key, c.id);
+        const error = errors[`score_${c.key}`];
+        return html`<fieldset class="${cx('criterion', error && 'has-error')}"${readOnlyReason ? html` disabled` : ''}>
+          <legend>${c.name} <span class="weight">weight ${formatWeight(c.weight, criteria)}</span></legend>
+          ${c.description ? html`<p class="hint">${c.description}</p>` : ''}
+          <div class="scale" role="radiogroup" aria-label="${c.name}">
+            ${scale.map((n) => html`<label class="scale-option"><input type="radio" name="score_${c.key}" value="${n}"${String(n) === current ? html` checked` : ''}><span aria-hidden="true">${n}</span><span class="sr-only">${c.name}: ${n} out of ${event.score_max}</span></label>`)}
+          </div>
+          <p class="scale-ends"><span>${event.score_min}: weak</span><span>${event.score_max}: outstanding</span></p>
+          ${error ? html`<p class="error-text">${error}</p>` : ''}
+        </fieldset>`;
+      })}
+      ${readOnlyReason
+        ? html`<div class="field"><p class="label">Comment</p><div class="prose">${view.review?.comment || html`<span class="muted">No comment.</span>`}</div></div>`
+        : textarea({ name: 'comment', label: 'Comment for the organizers', value: options.values?.comment ?? view.review?.comment ?? '', rows: 5, maxlength: 5000, hint: 'Optional. Organizers can read it; other judges cannot.' })}
+      ${readOnlyReason ? '' : html`<div class="form-actions">
+        ${view.review?.status === 'submitted' ? button('Save changes', { name: 'intent', value: 'submit' }) : html`${button('Save draft', { variant: 'secondary', name: 'intent', value: 'draft' })} ${button('Submit review', { name: 'intent', value: 'submit' })}`}
+      </div>
+      <p class="hint">A submitted review can still be revised until judging closes. Every change is on the audit trail.</p>`}
+    ${raw(readOnlyReason ? '</div>' : '</form>')}
+  </aside>
+</div>`,
+  });
+}
+
+function formatWeight(weight: number, criteria: { weight: number }[]): string {
+  const total = criteria.reduce((sum, c) => sum + c.weight, 0);
+  return total > 0 ? `${Math.round((weight / total) * 100)}%` : '';
+}
+
+export function judgeInviteAcceptPage(ctx: Ctx, event: EventRow, invited: UserRow): SafeHtml {
+  const signedInAsInvitee = ctx.user?.id === invited.id;
+  return page(ctx, {
+    title: `Judge ${event.name}`,
+    body: html`<div class="auth-card">
+  <p class="eyebrow">Invitation to judge</p>
+  <h1>${event.name}</h1>
+  <p>This invitation is for <strong>${invited.email}</strong>.</p>
+  ${signedInAsInvitee
+    ? html`<form method="post" action="${ctx.url.pathname}">${csrf(ctx)}${button('Accept and open my queue')}</form>`
+    : ctx.user
+      ? notice('warn', html`You are signed in as ${ctx.user.email}. Sign out, then sign in as ${invited.email} to accept.`)
+      : html`<p>${linkButton(`/login?next=${encodeURIComponent(ctx.url.pathname)}`, `Sign in as ${invited.email}`, 'primary')}</p>`}
+</div>`,
+  });
+}
