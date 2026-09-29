@@ -9,6 +9,8 @@
  * UI renders, as every role, posts only fields that its operation describes.
  */
 
+import { WEBHOOK_EVENTS } from '../domain/outbox.ts';
+
 type Json = Record<string, unknown>;
 
 const ref = (name: string) => ({ $ref: `#/components/schemas/${name}` });
@@ -347,6 +349,8 @@ interface Action {
   patterns?: Json;
   errors?: number[];
   security?: 'none';
+  /** A 201 reply for a JSON caller, when the action creates something the script needs back. */
+  created?: Json;
 }
 
 const str = (description?: string): Json => (description ? { type: 'string', description } : { type: 'string' });
@@ -395,6 +399,9 @@ const ACTIONS: Record<string, Action> = {
   'POST /organize/{slug}/voting': { tag: 'community', summary: 'Set up the community vote: window, how many picks, accounts or voter codes', who: 'an organizer', fields: { opens_at: when('UTC'), closes_at: when('UTC'), max_picks: { type: 'integer', minimum: 1 }, access: { enum: ['accounts', 'codes'] } }, errors: [401, 403, 409, 422] },
   'POST /organize/{slug}/voting/codes': { tag: 'community', summary: 'Print a batch of one-time voter codes (only their hashes are stored)', who: 'an organizer', fields: { count: { type: 'integer', minimum: 1, maximum: 500 } }, errors: [401, 403, 422] },
   'POST /organize/{slug}/voting/ballots/{id}/void': { tag: 'community', summary: 'Void a ballot, with a written reason (audited)', who: 'an organizer', fields: { reason: str() }, errors: [401, 403, 404, 422] },
+  'POST /organize/{slug}/webhooks': { tag: 'organize', summary: 'Add a webhook: an http(s) URL and the events to send. A JSON caller gets 201 with the webhook and its signing secret', who: 'an organizer', fields: { url: { type: 'string', format: 'uri' }, events: { type: 'array', items: { enum: [...WEBHOOK_EVENTS] }, minItems: 1 } }, errors: [401, 403, 422], created: { type: 'object', properties: { webhook: { type: 'object', properties: { id: str(), url: str(), secret: str('whsec_…, for the HMAC-SHA256 Forgeboard-Signature header'), events: { type: 'array', items: str() } } } } } },
+  'POST /organize/{slug}/webhooks/{id}/remove': { tag: 'organize', summary: 'Remove a webhook (its pending deliveries stop; its history stays)', who: 'an organizer', errors: [401, 403, 404] },
+  'POST /organize/{slug}/webhooks/{id}/ping': { tag: 'organize', summary: 'Queue a signed test delivery (type webhook.ping) to one webhook', who: 'an organizer', errors: [401, 403, 404] },
   'POST /organize/{slug}/voting/publish': { tag: 'community', summary: 'Publish the vote tally', who: 'an organizer', errors: [401, 403, 409] },
 };
 
@@ -413,7 +420,7 @@ function actionPaths(): Record<string, Json> {
       ...(hasBody
         ? { requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: action.fields ?? {}, ...(action.patterns ? { patternProperties: action.patterns } : {}) } } } } }
         : {}),
-      responses: { 200: json(ref('ActionResult'), 'Done (or `ok: false` with the message the page would show)'), ...errors(...(action.errors ?? [401, 403])) },
+      responses: { 200: json(ref('ActionResult'), 'Done (or `ok: false` with the message the page would show)'), ...(action.created ? { 201: json(action.created, 'Created') } : {}), ...errors(...(action.errors ?? [401, 403])) },
       ...(action.security === 'none' ? { security: [] } : {}),
     };
     paths[route] = { ...(paths[route] ?? {}), [method.toLowerCase()]: operation };

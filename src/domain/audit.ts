@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Store } from '../db/store.ts';
 import { iso } from '../util/time.ts';
+import { enqueueFromAudit } from './outbox.ts';
 import type { Actor } from './types.ts';
 
 /** The prev_hash of the first chained entry. */
@@ -63,11 +64,16 @@ export function record(store: Store, actor: Actor, entry: AuditEntry): void {
   // and a command-line tool) can never both extend the same entry and fork the chain.
   store.tx(() => {
     const prevHash = store.get<{ hash: string | null }>('SELECT hash FROM audit_log ORDER BY id DESC LIMIT 1')?.hash ?? GENESIS_HASH;
-    store.run(
+    const hash = entryHash(prevHash, row);
+    const { lastInsertRowid } = store.run(
       `INSERT INTO audit_log (at, event_id, actor_id, actor_label, action, subject_type, subject_id, summary, detail, ip, prev_hash, hash)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [row.at, row.event_id, row.actor_id, row.actor_label, row.action, row.subject_type, row.subject_id, row.summary, row.detail, row.ip, prevHash, entryHash(prevHash, row)],
+      [row.at, row.event_id, row.actor_id, row.actor_label, row.action, row.subject_type, row.subject_id, row.summary, row.detail, row.ip, prevHash, hash],
     );
+    // Webhooks: queued in this same transaction, so they fire only for changes that commit.
+    if (row.event_id) {
+      enqueueFromAudit(store, { id: lastInsertRowid, hash, at: row.at, eventId: row.event_id, action: row.action, subjectType: row.subject_type, subjectId: row.subject_id, summary: row.summary }, actor.now);
+    }
   });
 }
 

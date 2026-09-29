@@ -18,6 +18,8 @@ export interface Config {
   /** Overrides the signing secret that is otherwise generated once and kept in the database. */
   secret: string | null;
   quiet: boolean;
+  /** How often the webhook sender looks for due deliveries; 0 turns it off (tests drive it by hand). */
+  webhookIntervalMs: number;
 }
 
 function flag(value: string | undefined): boolean {
@@ -42,5 +44,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     trustProxy: flag(env.FORGEBOARD_TRUST_PROXY),
     secret: env.FORGEBOARD_SECRET ?? null,
     quiet: flag(env.FORGEBOARD_QUIET),
+    webhookIntervalMs: env.FORGEBOARD_WEBHOOK_INTERVAL_MS === undefined ? 2_000 : Math.max(0, Number(env.FORGEBOARD_WEBHOOK_INTERVAL_MS) || 0),
   };
 }

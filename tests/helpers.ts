@@ -23,6 +23,7 @@ export async function startServer(options: { demo?: boolean } = {}): Promise<Run
     FORGEBOARD_PORT: '0',
     FORGEBOARD_HOST: '127.0.0.1',
     FORGEBOARD_QUIET: '1',
+    FORGEBOARD_WEBHOOK_INTERVAL_MS: '0',
   });
   const running = await start(config);
   return {

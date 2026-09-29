@@ -12,6 +12,7 @@ import { judgeRoutes } from './routes/judge.ts';
 import { organizeRoutes } from './routes/organize.ts';
 import { publicRoutes } from './routes/public.ts';
 import { teamRoutes } from './routes/teams.ts';
+import { startWebhookWorker } from './domain/webhooks.ts';
 
 /** Every route module, in the order the router tries them. */
 export const ROUTE_MODULES = [publicRoutes, authRoutes, teamRoutes, judgeRoutes, organizeRoutes, communityRoutes, adminRoutes, apiRoutes];
@@ -32,12 +33,14 @@ export async function start(config: Config): Promise<Running> {
   const port = typeof address === 'object' && address ? address.port : config.port;
   const url = `http://localhost:${port}`;
   if (!config.quiet) printBanner(booted, url);
+  const stopWebhooks = config.webhookIntervalMs > 0 ? startWebhookWorker(booted.store, config.webhookIntervalMs) : () => {};
   return {
     server,
     booted,
     url,
     close: () =>
       new Promise((resolve) => {
+        stopWebhooks();
         server.close(() => {
           booted.store.close();
           resolve();

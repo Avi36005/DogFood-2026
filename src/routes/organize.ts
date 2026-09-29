@@ -9,6 +9,8 @@ import { eventProgress } from '../domain/progress.ts';
 import { chooseLiveSubmission, duplicateGroups, eventProjects } from '../domain/projects.ts';
 import { computeStandings, listSnapshots, publishResults, unpublishResults } from '../domain/results.ts';
 import { judgeRecord } from '../domain/records.ts';
+import { createWebhook, listDeliveries, listWebhooks, pingWebhook, removeWebhook } from '../domain/webhooks.ts';
+import { webhooksPage } from '../views/webhooks.ts';
 import { rubricLocked, saveRubric } from '../domain/rubric.ts';
 import type { EventRow } from '../domain/types.ts';
 import type { RouteModule } from '../http/app.ts';
@@ -216,6 +218,41 @@ export const organizeRoutes: RouteModule = (router, { store, config }) => {
   router.get('/organize/:slug/results', (ctx) => {
     const event = organizerEvent(ctx, 'preview the results');
     ctx.html(resultsAdminPage(ctx, event, computeStandings(store, event, { uncertainty: true }), listSnapshots(store, event.id), commitmentStatus(store, event.id), pairwiseSummary(store, event)));
+  });
+
+  // Webhooks (T4).
+  router.get('/organize/:slug/webhooks', (ctx) => {
+    const event = organizerEvent(ctx, 'see the webhooks');
+    ctx.html(webhooksPage(ctx, event, listWebhooks(store, ctx.actor, event), listDeliveries(store, ctx.actor, event)));
+  });
+
+  router.post('/organize/:slug/webhooks', async (ctx) => {
+    const event = getEvent(store, ctx.params.slug as string);
+    const body = await ctx.body();
+    try {
+      const hook = createWebhook(store, ctx.actor, event, body);
+      // A script needs the signing secret back; a person sees it on the page.
+      if (ctx.wantsJson) return ctx.json({ webhook: hook }, 201);
+      ctx.flash('success', 'Webhook added. Send it a test ping to check the address.');
+      ctx.redirect(`/organize/${event.slug}/webhooks`);
+    } catch (error) {
+      if (!(error instanceof ValidationError) || ctx.wantsJson) throw error;
+      ctx.html(webhooksPage(ctx, event, listWebhooks(store, ctx.actor, event), listDeliveries(store, ctx.actor, event), { values: body, errors: error.fields }), 422);
+    }
+  });
+
+  router.post('/organize/:slug/webhooks/:id/remove', (ctx) => {
+    const event = getEvent(store, ctx.params.slug as string);
+    removeWebhook(store, ctx.actor, event, ctx.params.id as string);
+    ctx.flash('success', 'Webhook removed.');
+    ctx.redirect(`/organize/${event.slug}/webhooks`);
+  });
+
+  router.post('/organize/:slug/webhooks/:id/ping', (ctx) => {
+    const event = getEvent(store, ctx.params.slug as string);
+    pingWebhook(store, ctx.actor, event, ctx.params.id as string);
+    ctx.flash('success', 'Test ping queued. It is sent within a few seconds; the table below shows the response.');
+    ctx.redirect(`/organize/${event.slug}/webhooks`);
   });
 
   router.get('/organize/:slug/judges/:id/record.json', (ctx) => {

@@ -92,6 +92,7 @@ export function organizerTabs(event: EventRow, current: string): SafeHtml {
     ['results', 'Results'],
     ['voting', 'Community vote'],
     ['audit', 'Audit trail'],
+    ['webhooks', 'Webhooks'],
     ['export', 'Export'],
   ];
   return html`<nav class="tabs" aria-label="Organizer sections">
