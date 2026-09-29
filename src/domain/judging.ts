@@ -439,3 +439,92 @@ export function saveReview(store: Store, actor: Actor, assignmentId: string, bod
 
 // The scores API --------------------------------------------------------------------------
 
+export interface ScoreEntry {
+  event_id: string;
+  assignment_id: string;
+  project_id: string;
+  project_title: string;
+  status: 'draft' | 'submitted';
+  criteria: Record<string, number>;
+  weighted: number | null;
+  comment: string;
+  submitted_at: string | null;
+  updated_at: string;
+}
+
+export interface JudgeScores {
+  judge: { id: string; name: string };
+  events: { id: string; name: string }[];
+  scores: ScoreEntry[];
+}
+
+function scoresOf(store: Store, judgeId: string, eventIds: string[]): ScoreEntry[] {
+  const entries: ScoreEntry[] = [];
+  for (const eventId of eventIds) {
+    const criteria = listCriteria(store, eventId);
+    const rows = store.all<{ assignment_id: string; project_id: string; project_title: string; status: 'draft' | 'submitted'; comment: string; submitted_at: string | null; updated_at: string }>(
+      `SELECT a.id AS assignment_id, p.id AS project_id, p.title AS project_title, r.status, r.comment, r.submitted_at, r.updated_at
+       FROM assignments a JOIN reviews r ON r.assignment_id = a.id JOIN projects p ON p.id = a.project_id
+       WHERE a.event_id = ? AND a.judge_id = ? ORDER BY p.id`,
+      [eventId, judgeId],
+    );
+    for (const row of rows) {
+      const values = scoreMap(store, row.assignment_id);
+      entries.push({
+        event_id: eventId,
+        ...row,
+        criteria: Object.fromEntries(criteria.filter((c) => values.has(c.id)).map((c) => [c.key, values.get(c.id) as number])),
+        weighted: weightedScore(values, criteria),
+      });
+    }
+  }
+  return entries;
+}
+
+/**
+ * GET /api/judge/scores[?judge=<id>][&event=<id>]
+ *
+ * A judge reads their own scores. Reading anyone else's needs the organizer role in an event
+ * where that person judges. The decision is made from the caller's roles before the target
+ * is looked up, so a refusal says nothing about whether the other judge exists, and every
+ * refusal is written to the audit trail of the caller's events.
+ */
+export function judgeScores(store: Store, actor: Actor, query: { judge?: string | null; event?: string | null }): JudgeScores {
+  const user = requireUser(actor);
+  const targetId = query.judge?.trim() || user.id;
+  const eventFilter = query.event ? getEvent(store, query.event).id : null;
+  const myRoles = store.all<{ event_id: string; role: string; name: string }>(
+    'SELECT r.event_id, r.role, e.name FROM event_roles r JOIN events e ON e.id = r.event_id WHERE r.user_id = ?',
+    [user.id],
+  ).filter((row) => !eventFilter || row.event_id === eventFilter);
+
+  const refuse = (message: string, what: string): never => {
+    const eventIds = [...new Set(myRoles.map((row) => row.event_id))];
+    throw new AccessDenied(message, {
+      eventId: eventIds[0] ?? null,
+      action: 'access.denied',
+      subjectType: 'judge_scores',
+      subjectId: targetId,
+      summary: `${actorLabel(actor)} was refused ${what}.`,
+      detail: { requested_judge: targetId, other_events: eventIds.slice(1) },
+    });
+  };
+
+  let eventIds: string[];
+  if (targetId === user.id) {
+    eventIds = myRoles.filter((row) => row.role === 'judge').map((row) => row.event_id);
+    if (eventIds.length === 0) refuse('Only judges have scores to read.', 'judge scores (they are not a judge)');
+  } else {
+    const organizes = myRoles.filter((row) => row.role === 'organizer').map((row) => row.event_id);
+    if (organizes.length === 0) refuse("You can read only your own scores. Another judge's scores are visible to organizers only.", `the scores of another judge (${targetId})`);
+    eventIds = organizes.filter((eventId) => rolesIn(store, targetId, eventId).has('judge'));
+    if (eventIds.length === 0) refuse('That person does not judge any event you organize.', `the scores of ${targetId}, who does not judge their events`);
+  }
+
+  const judge = store.get<{ id: string; name: string }>('SELECT id, name FROM users WHERE id = ?', [targetId]) as { id: string; name: string };
+  const events = eventIds.map((id) => {
+    const event = getEvent(store, id);
+    return { id: event.id, name: event.name };
+  });
+  return { judge, events, scores: scoresOf(store, targetId, eventIds) };
+}
