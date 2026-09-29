@@ -38,3 +38,28 @@ lists what does not.
 | **A link leaker** | Reuse a forwarded invite or reset link | Links are hashed at rest and expire. Password and judge links work once. A team invite dies when the captain creates a new one | `accounts.ts`, `teams.ts`, `judging.ts` |
 | **A resource exhauster** | Tie up the server | A 1 MB body limit, request and header timeouts, and bounded list sizes. Nothing the server does reaches out to the network, so there is no SSRF surface | `http/context.ts`, `server.ts` |
 
+## Demo mode, stated as a risk
+
+`FORGEBOARD_DEMO=1` creates five accounts with a password published in the README, and four
+fixed session tokens published in `.dogfood.toml`, so the acceptance checker and evaluators can
+act as each role. On a real event that is a master key. It is off unless enabled, the banner on
+every page says when it is on, the boot log warns in capitals, and the README's production
+steps start with turning it off.
+
+## What this does not defend against
+
+- **An administrator with shell access to the server.** They can edit the SQLite file directly,
+  including dropping the triggers that make the audit log append-only. The log is
+  tamper-*evident* against the application, not against root. Off-host backups taken after
+  publishing are the remedy.
+- **Judges colluding outside the system**, or a judge scoring dishonestly within their own
+  assignments. Forgeboard makes both visible, but it cannot make them impossible.
+- **Distributed guessing from many IPs.** The rate limit is per IP and email, in memory, and
+  resets on restart. A reverse proxy's limits are the next layer.
+- **Community-vote abuse (Sybil accounts, ballot stuffing).** Forgeboard has no public voting,
+  because T3 is not built. If it is added, these are the defences it needs:
+  - one vote per verified account per project, enforced by a unique index
+  - a per-voter budget
+  - per-voter random ballot order, so position does not decide votes
+  - results hidden until the window closes
+  - signals for bursts of new accounts, with every invalidation written to the audit trail
