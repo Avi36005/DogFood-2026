@@ -107,6 +107,18 @@ describe('served, and answering as documented', () => {
     assert.ok(!event.tracks.some((t) => t.name === 'Sneaky'));
   });
 
+  // Every action, called by a signed-out script with an empty JSON body, answers with a status
+  // the document lists for that operation: the documented errors are the real ones.
+  for (const route of routes.filter((r) => r.method === 'POST')) {
+    test(`POST ${route.path} signed out answers a documented status`, async () => {
+      const url = route.path.replace(':slug', 'sample-hack-2026').replace(/:[a-z]+/g, 'zz_missing');
+      const reply = await new Client(server.url).request('POST', url, { body: '{}', type: 'application/json', headers: { accept: 'application/json' } });
+      const documented = Object.keys(operation('POST', route.path)?.responses ?? {});
+      assert.ok(documented.includes(String(reply.status)), `${reply.status} is not among ${documented.join(', ')}: ${reply.text.slice(0, 120)}`);
+      assert.match(reply.headers.get('content-type') ?? '', /application\/json/, 'a script gets JSON back');
+    });
+  }
+
   test('a browser posting the form still gets the redirect', async () => {
     const organizer = Client.as(server.url, 'organizer');
     const reply = await organizer.postForm('/organize/sample-hack-2026/tracks', { name: 'Form track' }, { tokenFrom: '/organize/sample-hack-2026/settings' });
