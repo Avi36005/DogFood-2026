@@ -4,6 +4,7 @@ import { createProject, eventForSubmission, gallery, getProject, liveProjectOfTe
 import { listComments } from '../domain/comments.ts';
 import { currentEvidence, type ResultsDocument } from '../domain/evidence.ts';
 import { votePhase, voteSettings } from '../domain/voting.ts';
+import { projectCertificate } from '../domain/records.ts';
 import { publishedResults } from '../domain/results.ts';
 import { verifyText } from '../domain/signing.ts';
 import { myTeam } from '../domain/teams.ts';
@@ -13,6 +14,7 @@ import { forbidden, unauthorized, ValidationError } from '../util/errors.ts';
 import type { Body } from '../util/form.ts';
 import { eventFormPage } from '../views/organize.ts';
 import { aboutPage, eventPage, eventsPage, galleryPage, landingPage, projectDetailPage, projectFormPage, resultsPage } from '../views/public.ts';
+import { certificatePage } from '../views/records.ts';
 
 const text = (body: Body, key: string) => (typeof body[key] === 'string' ? (body[key] as string) : '');
 
@@ -175,6 +177,18 @@ export const publicRoutes: RouteModule = (router, { store }) => {
     const isOrganizer = ctx.user ? rolesIn(store, ctx.user.id, event.id).has('organizer') || Boolean(ctx.user.is_admin) : false;
     const evidence = currentEvidence(store, event);
     ctx.html(resultsPage(ctx, event, publishedResults(store, event), isOrganizer, evidence ? { signed: verifyText(evidence.documentText, evidence.signature, evidence.publicKey), document: JSON.parse(evidence.documentText) as ResultsDocument } : null));
+  });
+
+  // Certificates (T4): one per ranked project, signed, public once results are published.
+  router.get('/events/:slug/certificates/:id', (ctx) => {
+    const event: EventRow = getEvent(store, ctx.params.slug as string);
+    const record = projectCertificate(store, event, ctx.params.id as string);
+    ctx.html(certificatePage(ctx, event, record, verifyText(record.document_text, record.signature, record.public_key)));
+  });
+
+  router.get('/events/:slug/certificates/:id/signed.json', (ctx) => {
+    const event: EventRow = getEvent(store, ctx.params.slug as string);
+    ctx.json(projectCertificate(store, event, ctx.params.id as string));
   });
 
   // The signed results document. Anyone can check the signature with the public key it carries;

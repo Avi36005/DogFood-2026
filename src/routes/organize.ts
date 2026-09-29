@@ -8,6 +8,7 @@ import { assignManually, autoAssign, inviteJudge, listAssignments, listJudges, r
 import { eventProgress } from '../domain/progress.ts';
 import { chooseLiveSubmission, duplicateGroups, eventProjects } from '../domain/projects.ts';
 import { computeStandings, listSnapshots, publishResults, unpublishResults } from '../domain/results.ts';
+import { judgeRecord } from '../domain/records.ts';
 import { rubricLocked, saveRubric } from '../domain/rubric.ts';
 import type { EventRow } from '../domain/types.ts';
 import type { RouteModule } from '../http/app.ts';
@@ -215,6 +216,11 @@ export const organizeRoutes: RouteModule = (router, { store, config }) => {
   router.get('/organize/:slug/results', (ctx) => {
     const event = organizerEvent(ctx, 'preview the results');
     ctx.html(resultsAdminPage(ctx, event, computeStandings(store, event, { uncertainty: true }), listSnapshots(store, event.id), commitmentStatus(store, event.id), pairwiseSummary(store, event)));
+  });
+
+  router.get('/organize/:slug/judges/:id/record.json', (ctx) => {
+    const event = organizerEvent(ctx, `read the signed record of judge ${ctx.params.id}`);
+    ctx.json(judgeRecord(store, ctx.actor, event, ctx.params.id as string));
   });
 
   // The self-verifying results file: signed document, inputs and an offline checker in one page.

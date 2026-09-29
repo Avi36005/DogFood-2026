@@ -255,7 +255,7 @@ ${view.inviteLink ? notice('success', html`Send this one-time link to ${view.inv
           <form method="post" action="/organize/${event.slug}/judges/${j.id}/tracks" class="stack-form">${csrf(ctx)}${checkboxes({ name: 'track_ids', id: `tracks-${j.id}`, label: 'Tracks covered', values: j.trackIds, options: trackOptions, hint: 'None ticked means every track.' })}${button('Save tracks', { variant: 'secondary', small: true })}</form></details></td>
         <td class="n">${j.submitted}/${j.assigned}</td>
         <td>${j.has_password ? pill('active', 'success') : pill('invite pending', 'info')}</td>
-        <td>${j.submitted === 0 ? confirmForm(ctx, `/organize/${event.slug}/judges/${j.id}/remove`, 'Remove', `Removes ${j.name} and their ${j.assigned} unfinished assignment(s).`, 'Yes, remove', 'danger') : html`<span class="muted">has reviews</span>`}</td>
+        <td>${j.submitted === 0 ? confirmForm(ctx, `/organize/${event.slug}/judges/${j.id}/remove`, 'Remove', `Removes ${j.name} and their ${j.assigned} unfinished assignment(s).`, 'Yes, remove', 'danger') : html`<span class="muted">has reviews</span> <a class="small" href="/organize/${event.slug}/judges/${j.id}/record.json">signed record</a>`}</td>
       </tr>`)}</tbody></table></div>`}
   </div>
   <aside>

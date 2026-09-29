@@ -10,6 +10,7 @@ import { createPasswordLink, findUserByEmail } from './domain/accounts.ts';
 import { record, verifyChain } from './domain/audit.ts';
 import { parseBundle, verifyBundle } from './domain/evidence.ts';
 import { importFixtures } from './domain/fixtures.ts';
+import { verifyText } from './domain/signing.ts';
 import { systemActor } from './domain/types.ts';
 
 const USAGE = `Usage: node src/cli.ts <command> [argument]
@@ -19,6 +20,7 @@ const USAGE = `Usage: node src/cli.ts <command> [argument]
   password-link <email>   Print a one-time link to set a password (account recovery; there is no mail server).
   make-admin <email>      Give an existing account administrator access.
   verify-audit            Recompute every hash in the audit chain and report the first entry that does not verify.
+  verify-record <file>    Check a signed certificate or judge record (the JSON the portal served) offline.
   verify-results <file>   Check a signed results file offline: results.json from the public results page, or a
                           results capsule (.html). Verifies the Ed25519 signature and, when the file carries the
                           inputs, their fingerprint and a refit of the ranking. Needs no database.
@@ -36,6 +38,24 @@ function verifyResultsFile(file: string): number {
 
 function main(argv: string[]): number {
   const [command, argument] = argv;
+  if (command === 'verify-record' && argument) {
+    try {
+      const record = JSON.parse(fs.readFileSync(argument, 'utf8')) as { document_text?: string; signature?: string; public_key?: string; format?: string };
+      const ok = Boolean(record.document_text && record.signature && record.public_key && verifyText(record.document_text, record.signature, record.public_key));
+      const document = record.document_text ? (JSON.parse(record.document_text) as { format?: string; results?: { all_counted?: boolean; not_counted?: { project: string; reason: string }[] } | null }) : {};
+      console.log(`${ok ? 'PASS' : 'FAIL'}  signature            ${ok ? 'Ed25519 signature matches the record' : 'does not match: changed after signing, or another key'}`);
+      console.log(`      format               ${document.format ?? 'unknown'}`);
+      console.log(`      public key           ${record.public_key ?? 'missing'} (compare with the portal's results.json)`);
+      if (document.results && 'all_counted' in document.results) {
+        console.log(`${document.results.all_counted ? 'PASS' : 'FAIL'}  counted              ${document.results.all_counted ? 'every review of a ranked project is in the signed inputs at its value' : 'a review is missing from the signed inputs'}`);
+        for (const n of document.results.not_counted ?? []) console.log(`      not counted          ${n.project}: ${n.reason}`);
+      }
+      return ok && document.results?.all_counted !== false ? 0 : 1;
+    } catch (error) {
+      console.error(`error: ${error instanceof Error ? error.message : String(error)}`);
+      return 1;
+    }
+  }
   if (command === 'verify-results' && argument) {
     try {
       return verifyResultsFile(argument);

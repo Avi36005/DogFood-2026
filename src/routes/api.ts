@@ -9,6 +9,7 @@ import { publishedResults } from '../domain/results.ts';
 import type { EventRow } from '../domain/types.ts';
 import type { RouteModule } from '../http/app.ts';
 import { openApiDocument } from './openapi.ts';
+import { verifyRecord } from '../domain/records.ts';
 import type { Ctx } from '../http/context.ts';
 import { badRequest, unauthorized } from '../util/errors.ts';
 
@@ -36,6 +37,9 @@ export const apiRoutes: RouteModule = (router, { store }) => {
       forms: 'Every form in the UI is an API call too: post its fields as JSON and get JSON back ({ ok, message, location }). All of them are in /api/openapi.json.',
       endpoints: {
         'GET /api/openapi.json': 'This API, and every UI action, as an OpenAPI 3.1 document.',
+        'GET /events/{slug}/certificates/{project}/signed.json': 'A signed certificate for a ranked project (public once published).',
+        'GET /judge/{slug}/record.json': 'Your signed judge record: your reviews and, once published, the signed inputs that counted them.',
+        'POST /api/verify': 'Check any signed record (certificate, judge record, results document) against this instance.',
         'GET /api/me': 'You, and your roles per event.',
         'GET /api/events': 'All events (public).',
         'GET /api/events/{id}': 'One event with tracks, prizes and rubric (public).',
@@ -59,6 +63,12 @@ export const apiRoutes: RouteModule = (router, { store }) => {
   });
 
   router.get('/api/openapi.json', (ctx) => ctx.json(openApiDocument()));
+
+  // Anyone can check a certificate, a judge record or the results document against this instance.
+  router.post('/api/verify', async (ctx) => {
+    const body = (await ctx.body()) as Record<string, unknown>;
+    ctx.json(verifyRecord(store, body));
+  });
 
   router.get('/api/me', (ctx) => {
     if (!ctx.user) throw unauthorized();

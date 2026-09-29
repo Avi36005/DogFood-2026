@@ -2,6 +2,7 @@ import { myEventRoles } from '../domain/access.ts';
 import { compareView, recordChoice } from '../domain/compare.ts';
 import { getEvent } from '../domain/events.ts';
 import { acceptJudgeInvite, claimJudgeInvite, findJudgeInvite, judgeQueue, reviewPage, saveReview } from '../domain/judging.ts';
+import { judgeRecord } from '../domain/records.ts';
 import type { RouteModule } from '../http/app.ts';
 import { HttpError, unauthorized, ValidationError } from '../util/errors.ts';
 import { linkUsedPage, passwordLinkPage } from '../views/auth.ts';
@@ -34,6 +35,12 @@ export const judgeRoutes: RouteModule = (router, { store }) => {
   router.get('/judge/:slug/compare', (ctx) => {
     const event = getEvent(store, ctx.params.slug as string);
     ctx.html(comparePage(ctx, compareView(store, ctx.actor, event)));
+  });
+
+  // The judge's own signed record of what they submitted and, once published, what was counted.
+  router.get('/judge/:slug/record.json', (ctx) => {
+    if (!ctx.user) throw unauthorized();
+    ctx.json(judgeRecord(store, ctx.actor, getEvent(store, ctx.params.slug as string)));
   });
 
   router.post('/judge/:slug/compare', async (ctx) => {

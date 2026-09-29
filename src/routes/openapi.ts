@@ -196,6 +196,37 @@ export function openApiDocument(): Json {
           responses: { 200: { description: 'RFC 4180 CSV; cells that a spreadsheet would run as a formula are neutralized', content: { 'text/csv': { schema: { type: 'string' } } } }, ...errors(400, 401, 403, 404) },
         },
       },
+      '/events/{slug}/certificates/{id}/signed.json': {
+        get: {
+          tags: ['events'], operationId: 'getCertificate', summary: 'The signed certificate of a ranked project: place, score, rank interval, team, and the SHA-256 of the signed results it came from', security: [],
+          parameters: [path('slug', 'Event slug'), path('id', 'Project id')],
+          responses: { 200: json(ref('SignedRecord'), 'Ed25519-signed; check it with POST /api/verify or `cli.ts verify-record`'), ...errors(404) },
+        },
+      },
+      '/events/{slug}/certificates/{id}': {
+        get: { tags: ['events'], operationId: 'getCertificatePage', summary: 'The printable certificate page, with its signature status', security: [], parameters: [path('slug', 'Event slug'), path('id', 'Project id')], responses: { 200: { description: 'HTML', content: { 'text/html': { schema: { type: 'string' } } } }, ...errors(404) } },
+      },
+      '/judge/{slug}/record.json': {
+        get: {
+          tags: ['judging'], operationId: 'getMyJudgeRecord', summary: 'Your signed judge record: every review you submitted and, once results are published, the rows of the signed inputs under your pseudonym, so you can check each review was counted at your value',
+          parameters: [path('slug', 'Event slug')],
+          responses: { 200: json(ref('SignedRecord'), 'Your record'), ...errors(401, 403, 404) },
+        },
+      },
+      '/organize/{slug}/judges/{id}/record.json': {
+        get: {
+          tags: ['organize'], operationId: 'getJudgeRecord', summary: "A judge's signed record (organizers, and administrators with an audit entry)",
+          parameters: [path('slug', 'Event slug'), path('id', 'Judge id')],
+          responses: { 200: json(ref('SignedRecord'), 'The record'), ...errors(401, 403, 404) },
+        },
+      },
+      '/api/verify': {
+        post: {
+          tags: ['events'], operationId: 'verifyRecord', summary: 'Check a certificate, judge record or results document against this instance', security: [],
+          requestBody: body({ document_text: str('Exactly as issued'), signature: str(), public_key: str('Optional; defaults to this instance’s key') }, ['document_text', 'signature']),
+          responses: { 200: json({ type: 'object', properties: { valid: { type: 'boolean' }, signed_by_this_instance: { type: 'boolean' }, format: { type: ['string', 'null'] }, problems: { type: 'array', items: { type: 'string' } } } }, 'The check (200 even when invalid: read `valid`)') },
+        },
+      },
       '/api/openapi.json': {
         get: { tags: ['account'], operationId: 'openApi', summary: 'This document', security: [], responses: { 200: json({ type: 'object' }, 'OpenAPI 3.1') } },
       },
@@ -253,6 +284,18 @@ export function openApiDocument(): Json {
               },
             },
           },
+        },
+        SignedRecord: {
+          type: 'object',
+          properties: {
+            format: { enum: ['forgeboard-certificate/v1', 'forgeboard-judge-record/v1'] },
+            signature_algorithm: { const: 'Ed25519' },
+            public_key: { type: 'string', description: 'Raw Ed25519 key, base64url' },
+            signature: { type: 'string', description: 'base64url, over the UTF-8 bytes of document_text' },
+            document_text: { type: 'string' },
+            document: { type: 'object' },
+          },
+          required: ['format', 'signature', 'public_key', 'document_text'],
         },
         ActionResult: {
           type: 'object',
