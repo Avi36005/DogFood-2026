@@ -24,6 +24,12 @@ export class RateLimiter {
     return entry.count > this.#limit ? Math.ceil((entry.resetAt - now) / 1000) : 0;
   }
 
+  /** Seconds to wait if the key is over its limit right now, without counting an attempt. */
+  waiting(key: string, now = Date.now()): number {
+    const entry = this.#hits.get(key);
+    return entry && entry.resetAt > now && entry.count > this.#limit ? Math.ceil((entry.resetAt - now) / 1000) : 0;
+  }
+
   reset(key: string): void {
     this.#hits.delete(key);
   }

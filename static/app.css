@@ -334,3 +334,27 @@ fieldset[disabled] .scale-option input:checked + span { opacity: 1; }
   .topbar, .footer, .demo-banner, .tabs, form, details.confirm { display: none !important; }
   body { background: #fff; }
 }
+
+/* Community vote and comments (T3) ------------------------------------------------------ */
+.ballot-list { border: 0; padding: 0; margin: 0 0 16px; display: grid; gap: 8px; }
+.ballot-item { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; background: var(--surface); border: 1px solid var(--edge); border-radius: var(--radius-sm); cursor: pointer; }
+.ballot-item input { margin-top: 4px; width: 20px; height: 20px; flex: none; }
+.ballot-item:has(input:checked) { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.ballot-item.own { cursor: not-allowed; opacity: 0.7; }
+.code-list { columns: 3 14em; margin: 8px 0 0; padding-left: 24px; }
+.code-list code { font-size: 15px; letter-spacing: 0.04em; }
+.comment-list { list-style: none; padding: 0; margin: 0 0 16px; display: grid; gap: 10px; }
+.comment-list li { padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.comment-list li.hidden-comment { border-style: dashed; }
+.comment-meta { font-size: 14px; color: var(--muted); display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.comment-body { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cluster { margin-bottom: 10px; }
+.cluster summary { cursor: pointer; }
+
+/* Compare mode (pairwise judging) --------------------------------------------------------- */
+.compare { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); margin-bottom: 16px; }
+@media (min-width: 760px) { .compare { grid-template-columns: 1fr 1fr; } }
+.compare-side { background: var(--surface); border: 1px solid var(--edge); border-radius: var(--radius); padding: 18px; display: flex; flex-direction: column; gap: 8px; }
+.compare-side h2 { margin: 0; font-size: 22px; }
+.compare-side form { margin-top: auto; }
+.compare-side .btn { width: 100%; }

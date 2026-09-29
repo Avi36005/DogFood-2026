@@ -20,6 +20,15 @@ export interface AppDeps {
   loginLimiter: RateLimiter;
   /** New accounts per IP: loose, because a whole venue can share one address at kickoff. */
   signupLimiter: RateLimiter;
+  /**
+   * Wrong voter codes per IP. Only failures count, so a whole venue behind one address can
+   * vote while a guesser is stopped after a handful of misses.
+   */
+  codeLimiter: RateLimiter;
+  /** Ballot posts per IP: a flood limit only (each voter can cast one ballot anyway). */
+  ballotLimiter: RateLimiter;
+  /** Comments per account. */
+  commentLimiter: RateLimiter;
 }
 
 export type RouteModule = (router: Router, deps: AppDeps) => void;
@@ -45,6 +54,9 @@ export function createApp(store: Store, config: Config, secret: string, modules:
     secret,
     loginLimiter: new RateLimiter(10, 10 * 60_000),
     signupLimiter: new RateLimiter(100, 10 * 60_000),
+    codeLimiter: new RateLimiter(20, 10 * 60_000),
+    ballotLimiter: new RateLimiter(1000, 10 * 60_000),
+    commentLimiter: new RateLimiter(10, 10 * 60_000),
   };
   const router = new Router();
   for (const register of modules) register(router, deps);

@@ -90,6 +90,14 @@ export async function seedDemo(store: Store, actor: Actor, eventId: string): Pro
       store.run('UPDATE users SET password_hash = ? WHERE id = ? AND password_hash IS NULL', [passwordHash, account.user.id]);
       if (account.token) createSession(store, account.user.id, actor.now, { token: account.token, days: 365, demo: true });
     }
+    // A community vote that is open for two weeks from the first boot, so T3 can be tried at once.
+    if (!store.get('SELECT 1 FROM vote_settings WHERE event_id = ?', [eventId])) {
+      store.run(
+        "INSERT INTO vote_settings (event_id, opens_at, closes_at, access, max_picks, updated_at) VALUES (?, ?, ?, 'accounts', 3, ?)",
+        [eventId, now, iso(new Date(actor.now.getTime() + 14 * 86_400_000)), now],
+      );
+      record(store, actor, { eventId, action: 'vote.configured', subjectType: 'event', subjectId: eventId, summary: 'Demo mode opened a community vote for signed-in accounts for two weeks, up to 3 approvals per ballot.' });
+    }
     if (!store.get("SELECT 1 FROM audit_log WHERE action = 'demo.seeded'")) {
       record(store, actor, {
         eventId,

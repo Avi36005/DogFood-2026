@@ -8,15 +8,16 @@ import { weightedScore } from './normalization.ts';
 import { computeStandings } from './results.ts';
 import type { Actor, EventRow } from './types.ts';
 
-export const EXPORT_KINDS = ['results', 'reviews', 'projects', 'judges', 'assignments', 'audit'] as const;
+export const EXPORT_KINDS = ['results', 'reviews', 'projects', 'judges', 'assignments', 'votes', 'audit'] as const;
 export type ExportKind = (typeof EXPORT_KINDS)[number];
 
 export const EXPORT_DESCRIPTIONS: Record<ExportKind, string> = {
-  results: 'Ranking with raw mean, normalized score, review count and coverage flag.',
+  results: 'Ranking with raw mean, normalized score, review count, coverage flag, 90% rank interval and top-3 share.',
   reviews: 'Every review: judge, project, each criterion, weighted score, comment, status.',
   projects: 'Every project including drafts, withdrawn and replaced ones, with team and links.',
   judges: 'Judges with tracks, progress, fitted offset and flags.',
   assignments: 'Who was assigned what, how (fixture, auto, manual) and review status.',
+  votes: 'Every community-vote ballot: when, which kind of voter, the projects it approved, and whether it was voided and why.',
   audit: 'The full audit trail for this event.',
 };
 
@@ -30,12 +31,13 @@ export function exportCsv(store: Store, actor: Actor, event: EventRow, kind: str
   const filename = `${event.slug}-${kind}.csv`;
   switch (kind as ExportKind) {
     case 'results': {
-      const r = computeStandings(store, event);
+      const r = computeStandings(store, event, { uncertainty: true });
       const rows: CsvValue[][] = r.standings.map((s) => [
         s.rank, s.project_id, s.title, s.team_name, s.track_name, s.review_count, round(s.raw_mean), round(s.score), s.raw_rank, s.low_coverage,
+        s.rank_lo, s.rank_hi, round(s.podium_share, 3),
         event.results_published_at ? 'published' : 'preview',
       ]);
-      return { filename, body: toCsv(['rank', 'project_id', 'title', 'team', 'track', 'reviews', 'raw_mean', 'normalized_score', 'raw_rank', 'low_coverage', 'status'], rows) };
+      return { filename, body: toCsv(['rank', 'project_id', 'title', 'team', 'track', 'reviews', 'raw_mean', 'normalized_score', 'raw_rank', 'low_coverage', 'rank_lo_90', 'rank_hi_90', 'top3_share', 'status'], rows) };
     }
     case 'reviews': {
       const criteria = listCriteria(store, event.id);
@@ -86,6 +88,20 @@ export function exportCsv(store: Store, actor: Actor, event: EventRow, kind: str
       );
       const headers = ['id', 'project_id', 'title', 'judge_id', 'judge', 'source', 'created_at', 'review_status'];
       return { filename, body: toCsv(headers, rows.map((r) => headers.map((h) => r[h] ?? null))) };
+    }
+    case 'votes': {
+      const ballots = store.all<{ id: string; cast_at: string; voter: string; picks: string | null; voided_at: string | null; voided_reason: string | null; ip_hash: string | null }>(
+        `SELECT b.id, b.cast_at, coalesce('account ' || b.voter_user_id, 'code ' || c.batch) AS voter,
+           (SELECT group_concat(project_id, '; ') FROM (SELECT project_id FROM ballot_picks WHERE ballot_id = b.id ORDER BY project_id)) AS picks,
+           b.voided_at, b.voided_reason, b.ip_hash
+         FROM ballots b LEFT JOIN voter_codes c ON c.id = b.voter_code_id WHERE b.event_id = ? ORDER BY b.cast_at, b.id`,
+        [event.id],
+      );
+      return {
+        filename,
+        body: toCsv(['ballot_id', 'cast_at', 'voter', 'approved_projects', 'voided_at', 'voided_reason', 'address_group'],
+          ballots.map((b) => [b.id, b.cast_at, b.voter, b.picks, b.voided_at, b.voided_reason, b.ip_hash?.slice(0, 8) ?? null])),
+      };
     }
     case 'audit': {
       const rows = listAudit(store, event.id, { limit: 500 });

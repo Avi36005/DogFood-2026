@@ -90,6 +90,7 @@ export function organizerTabs(event: EventRow, current: string): SafeHtml {
     ['assignments', 'Assignments'],
     ['projects', 'Projects'],
     ['results', 'Results'],
+    ['voting', 'Community vote'],
     ['audit', 'Audit trail'],
     ['export', 'Export'],
   ];

@@ -7,6 +7,7 @@ import { createApp } from './http/app.ts';
 import { adminRoutes } from './routes/admin.ts';
 import { apiRoutes } from './routes/api.ts';
 import { authRoutes } from './routes/auth.ts';
+import { communityRoutes } from './routes/community.ts';
 import { judgeRoutes } from './routes/judge.ts';
 import { organizeRoutes } from './routes/organize.ts';
 import { publicRoutes } from './routes/public.ts';
@@ -21,7 +22,7 @@ export interface Running {
 
 export async function start(config: Config): Promise<Running> {
   const booted = await boot(config);
-  const handler = createApp(booted.store, config, booted.secret, [publicRoutes, authRoutes, teamRoutes, judgeRoutes, organizeRoutes, adminRoutes, apiRoutes]);
+  const handler = createApp(booted.store, config, booted.secret, [publicRoutes, authRoutes, teamRoutes, judgeRoutes, organizeRoutes, communityRoutes, adminRoutes, apiRoutes]);
   const server = http.createServer({ requestTimeout: 30_000, headersTimeout: 15_000 }, handler);
   await new Promise<void>((resolve) => server.listen(config.port, config.host, resolve));
   const address = server.address();

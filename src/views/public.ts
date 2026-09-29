@@ -1,5 +1,9 @@
 import { phaseOf, type EventCounts, type Phase } from '../domain/events.ts';
 import type { GalleryItem, ProjectPage, RevisionRow } from '../domain/projects.ts';
+import type { CommentView } from '../domain/comments.ts';
+import type { ResultsDocument } from '../domain/evidence.ts';
+import type { VotePhase } from '../domain/voting.ts';
+import { commentsSection } from './community.ts';
 import type { PublishedRow, Snapshot } from '../domain/results.ts';
 import type { EventRow, PrizeRow, Role, TeamRow, TrackRow } from '../domain/types.ts';
 import type { Ctx } from '../http/context.ts';
@@ -113,7 +117,7 @@ function projectCard(p: GalleryItem): SafeHtml {
 
 // Project page -------------------------------------------------------------------
 
-export function projectDetailPage(ctx: Ctx, view: ProjectPage, revisions: RevisionRow[] | null): SafeHtml {
+export function projectDetailPage(ctx: Ctx, view: ProjectPage, revisions: RevisionRow[] | null, comments: CommentView[] | null = null): SafeHtml {
   const { project, event, team, track, members } = view;
   const links = [
     ['Repository', project.repo_url],
@@ -142,6 +146,7 @@ ${view.supersedes.length ? notice('info', html`This is the submission that count
   <div>
     ${section('About the project', project.description ? html`<div class="prose">${project.description}</div>` : html`<p class="muted">The team has not written a description.</p>`)}
     ${links.length ? section('Links', html`<ul class="link-list">${links.map(([label, url]) => html`<li><span>${label}</span> <a href="${url}" rel="nofollow noopener ugc">${url}</a></li>`)}</ul>`) : ''}
+    ${comments ? commentsSection(ctx, project, comments) : ''}
   </div>
   <aside>
     ${section('Team', html`<p class="team-name">${team.name}</p><ul class="plain-list">${members.map((m) => html`<li>${m.name}${m.is_captain ? html` <span class="muted">(captain)</span>` : ''}</li>`)}</ul>`)}
@@ -234,6 +239,7 @@ export interface EventPageView {
   roles: Set<Role>;
   team: TeamRow | null;
   published: boolean;
+  vote?: VotePhase;
 }
 
 export function eventPage(ctx: Ctx, view: EventPageView): SafeHtml {
@@ -245,6 +251,8 @@ export function eventPage(ctx: Ctx, view: EventPageView): SafeHtml {
   if (view.team) cta.push(linkButton(`/events/${event.slug}/team`, `Your team: ${view.team.name}`, roles.has('organizer') || roles.has('judge') ? 'secondary' : 'primary'));
   else if (phase.key === 'open' && !roles.has('judge') && !roles.has('organizer')) cta.push(linkButton(ctx.user ? `/events/${event.slug}/team` : `/signup?next=/events/${event.slug}/team`, 'Join or start a team', 'primary'));
   if (view.published) cta.push(linkButton(`/events/${event.slug}/results`, 'Results', 'secondary'));
+  if (view.vote === 'open') cta.push(linkButton(`/events/${event.slug}/vote`, 'Vote for your favourites', roles.size ? 'secondary' : 'primary'));
+  if (view.vote === 'published') cta.push(linkButton(`/events/${event.slug}/vote/results`, 'Community vote', 'secondary'));
   cta.push(linkButton(`/projects?event=${event.slug}`, 'Projects', 'secondary'));
 
   return page(ctx, {
@@ -276,7 +284,8 @@ ${pageHeader(event.name, { eyebrow: phasePill(phase), lead: event.tagline, actio
   });
 }
 
-export function resultsPage(ctx: Ctx, event: EventRow, published: { snapshot: Snapshot; rows: PublishedRow[] } | null, isOrganizer: boolean): SafeHtml {
+export function resultsPage(ctx: Ctx, event: EventRow, published: { snapshot: Snapshot; rows: PublishedRow[] } | null, isOrganizer: boolean, evidence: { signed: boolean; document: ResultsDocument } | null = null): SafeHtml {
+  const intervals = Boolean(published?.rows.some((r) => r.rank_lo !== null));
   return page(ctx, {
     title: `Results · ${event.name}`,
     nav: 'events',
@@ -287,13 +296,26 @@ ${!published
   : html`
 <div class="table-wrap"><table class="data">
   <caption class="sr-only">Final ranking</caption>
-  <thead><tr><th scope="col">Rank</th><th scope="col">Project</th><th scope="col">Team</th><th scope="col">Track</th><th scope="col" class="n">Score</th><th scope="col" class="n">Raw mean</th><th scope="col" class="n">Reviews</th></tr></thead>
+  <thead><tr><th scope="col">Rank</th><th scope="col">Project</th><th scope="col">Team</th><th scope="col">Track</th><th scope="col" class="n">Score</th><th scope="col" class="n">Raw mean</th>${intervals ? html`<th scope="col" class="n">Likely place (90%)</th>` : ''}<th scope="col" class="n">Reviews</th></tr></thead>
   <tbody>${published.rows.map((r) => html`<tr${r.rank <= 3 ? html` class="podium"` : ''}>
     <td class="rank">${r.rank}</td><td><a href="/projects/${r.project_id}">${r.title}</a>${r.low_coverage ? html` ${pill('few reviews', 'warn')}` : ''}</td><td>${r.team_name}</td><td>${r.track_name ?? ''}</td>
-    <td class="n">${num(r.score, 3)}</td><td class="n">${num(r.raw_mean, 3)}</td><td class="n">${r.review_count}</td></tr>`)}</tbody>
+    <td class="n">${num(r.score, 3)}</td><td class="n">${num(r.raw_mean, 3)}</td>${intervals ? html`<td class="n">${r.rank_lo === null || r.rank_hi === null ? '–' : r.rank_lo === r.rank_hi ? String(r.rank_lo) : `${r.rank_lo}–${r.rank_hi}`}</td>` : ''}<td class="n">${r.review_count}</td></tr>`)}</tbody>
 </table></div>
-${section('How these scores were computed', html`<p><strong>Score</strong> is the project’s average after removing each judge’s fitted offset (method <code>${published.snapshot.method}</code>, shrinkage λ = ${published.snapshot.lambda}). <strong>Raw mean</strong> is the plain average of its reviews. Both are on the event’s ${event.score_min}–${event.score_max} scale, from the weighted rubric. <a href="/about#normalization">Full method</a>.</p>`)}`}`,
+${section('How these scores were computed', html`<p><strong>Score</strong> is the project’s average after removing each judge’s fitted offset (method <code>${published.snapshot.method}</code>, shrinkage λ = ${published.snapshot.lambda}). <strong>Raw mean</strong> is the plain average of its reviews. Both are on the event’s ${event.score_min}–${event.score_max} scale, from the weighted rubric.${intervals ? html` <strong>Likely place</strong> is the range the project lands in across 90% of simulated re-runs of the judging with the same judges and noise: overlapping ranges are too close to call.` : ''} <a href="/about#normalization">Full method</a>.</p>`)}
+${evidence ? verifySection(event, evidence) : ''}`}`,
   });
+}
+
+function verifySection(event: EventRow, evidence: { signed: boolean; document: ResultsDocument }): SafeHtml {
+  const doc = evidence.document;
+  const c = doc.certainty;
+  const commitment = doc.method.commitment;
+  return section('Check these results yourself', html`<ul class="row-list">
+  <li><span>${evidence.signed ? pill('signature valid', 'success') : pill('signature invalid', 'danger')} Signed with Ed25519 when published. The signed document quotes every score and rank above, the weights, and the audit trail's head at that moment (#${doc.audit_anchor?.id ?? '–'}).</span></li>
+  <li><span>${commitment ? (commitment.unchanged ? pill('method unchanged', 'success') : pill('method changed', 'warn')) : pill('not recorded', 'neutral')} ${commitment ? (commitment.unchanged ? html`The method and weights were fixed ${formatUtc(commitment.committed_at)}, when the first score arrived, and were not changed before publication.` : html`The method or weights changed after scoring began (${commitment.later_rubric_edits} rubric edit(s)); the organizer's audit trail records each one.`) : 'No method commitment was recorded for this event.'}</span></li>
+  ${c ? html`<li><span>${pill(`${c.winner_holds} of ${c.refits}`, c.winner_holds === c.refits ? 'success' : 'info')} First place survives removing any one judge in ${c.winner_holds} of ${c.refits} refits; the podium in ${c.podium_holds} of ${c.refits}.</span></li>` : ''}
+</ul>
+<p>${linkButton(`/events/${event.slug}/results.json`, 'Signed results (JSON)', 'secondary')} Check it offline with <code>node src/cli.ts verify-results results.json</code>. The organizers can also share a results capsule: one HTML file that checks its own signature and refits the ranking in any browser.</p>`);
 }
 
 // About ------------------------------------------------------------------------------

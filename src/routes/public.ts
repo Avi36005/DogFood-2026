@@ -1,7 +1,11 @@
 import { rolesIn } from '../domain/access.ts';
 import { createEvent, eventCounts, getEvent, listEvents, listPrizes, listTracks, submissionsOpen } from '../domain/events.ts';
 import { createProject, eventForSubmission, gallery, getProject, liveProjectOfTeam, projectPage, projectRevisions, updateProject, withdrawProject } from '../domain/projects.ts';
+import { listComments } from '../domain/comments.ts';
+import { currentEvidence, type ResultsDocument } from '../domain/evidence.ts';
+import { votePhase, voteSettings } from '../domain/voting.ts';
 import { publishedResults } from '../domain/results.ts';
+import { verifyText } from '../domain/signing.ts';
 import { myTeam } from '../domain/teams.ts';
 import type { EventRow } from '../domain/types.ts';
 import type { RouteModule } from '../http/app.ts';
@@ -77,7 +81,8 @@ export const publicRoutes: RouteModule = (router, { store }) => {
   router.get('/projects/:id', (ctx) => {
     const view = projectPage(store, ctx.actor, ctx.params.id as string);
     const member = view.members.some((m) => m.id === ctx.user?.id);
-    ctx.html(projectDetailPage(ctx, view, member || view.isOrganizer ? projectRevisions(store, view.project.id) : null));
+    const isPublic = view.project.status === 'submitted' && !view.project.superseded_by;
+    ctx.html(projectDetailPage(ctx, view, member || view.isOrganizer ? projectRevisions(store, view.project.id) : null, isPublic ? listComments(store, ctx.actor, view.project) : null));
   });
 
   router.get('/projects/:id/edit', (ctx) => {
@@ -161,12 +166,31 @@ export const publicRoutes: RouteModule = (router, { store }) => {
       roles: ctx.user ? rolesIn(store, ctx.user.id, event.id) : new Set(),
       team: ctx.user ? (myTeam(store, ctx.user.id, event.id) ?? null) : null,
       published: Boolean(event.results_published_at),
+      vote: votePhase(voteSettings(store, event.id), ctx.now),
     }));
   });
 
   router.get('/events/:slug/results', (ctx) => {
     const event: EventRow = getEvent(store, ctx.params.slug as string);
     const isOrganizer = ctx.user ? rolesIn(store, ctx.user.id, event.id).has('organizer') : false;
-    ctx.html(resultsPage(ctx, event, publishedResults(store, event), isOrganizer));
+    const evidence = currentEvidence(store, event);
+    ctx.html(resultsPage(ctx, event, publishedResults(store, event), isOrganizer, evidence ? { signed: verifyText(evidence.documentText, evidence.signature, evidence.publicKey), document: JSON.parse(evidence.documentText) as ResultsDocument } : null));
+  });
+
+  // The signed results document. Anyone can check the signature with the public key it carries;
+  // the per-review inputs stay with the organizer (they ship in the results capsule).
+  router.get('/events/:slug/results.json', (ctx) => {
+    const event: EventRow = getEvent(store, ctx.params.slug as string);
+    const evidence = currentEvidence(store, event);
+    if (!evidence) return ctx.json({ published: false, message: 'Results are hidden until the organizers publish them.' }, 404);
+    ctx.json({
+      published: true,
+      signature_algorithm: 'Ed25519',
+      public_key: evidence.publicKey,
+      signature: evidence.signature,
+      document_text: evidence.documentText,
+      document: JSON.parse(evidence.documentText),
+      how_to_verify: 'The signature is over the UTF-8 bytes of document_text, exactly as given. Save this response and run: node src/cli.ts verify-results <file>. The organizer\'s results capsule adds the inputs and refits the ranking in a browser.',
+    });
   });
 };
