@@ -196,6 +196,13 @@ export function openApiDocument(): Json {
           responses: { 200: { description: 'RFC 4180 CSV; cells that a spreadsheet would run as a formula are neutralized', content: { 'text/csv': { schema: { type: 'string' } } } }, ...errors(400, 401, 403, 404) },
         },
       },
+      '/embed/{slug}': {
+        get: {
+          tags: ['events'], operationId: 'embedWidget', summary: 'The embeddable widget: the public gallery, or the published results, for an iframe on another site (the only framable page; no script, no form)', security: [],
+          parameters: [path('slug', 'Event slug'), query('view', 'What to show', { enum: ['gallery', 'results'], default: 'gallery' }), query('track', 'Track id'), query('limit', 'At most this many projects', { type: 'integer', minimum: 1, maximum: 60 })],
+          responses: { 200: { description: 'HTML', content: { 'text/html': { schema: { type: 'string' } } } }, ...errors(404) },
+        },
+      },
       '/events/{slug}/certificates/{id}/signed.json': {
         get: {
           tags: ['events'], operationId: 'getCertificate', summary: 'The signed certificate of a ranked project: place, score, rank interval, team, and the SHA-256 of the signed results it came from', security: [],

@@ -15,6 +15,7 @@ import type { Body } from '../util/form.ts';
 import { eventFormPage } from '../views/organize.ts';
 import { aboutPage, eventPage, eventsPage, galleryPage, landingPage, projectDetailPage, projectFormPage, resultsPage } from '../views/public.ts';
 import { certificatePage } from '../views/records.ts';
+import { embedPage } from '../views/embed.ts';
 
 const text = (body: Body, key: string) => (typeof body[key] === 'string' ? (body[key] as string) : '');
 
@@ -177,6 +178,18 @@ export const publicRoutes: RouteModule = (router, { store }) => {
     const isOrganizer = ctx.user ? rolesIn(store, ctx.user.id, event.id).has('organizer') || Boolean(ctx.user.is_admin) : false;
     const evidence = currentEvidence(store, event);
     ctx.html(resultsPage(ctx, event, publishedResults(store, event), isOrganizer, evidence ? { signed: verifyText(evidence.documentText, evidence.signature, evidence.publicKey), document: JSON.parse(evidence.documentText) as ResultsDocument } : null));
+  });
+
+  // The embeddable widget (T4). The only page that may be framed by another site; it carries no
+  // script and no form, and shows only what the public gallery and results already show.
+  router.get('/embed/:slug', (ctx) => {
+    const event: EventRow = getEvent(store, ctx.params.slug as string);
+    const view = ctx.query('view') === 'results' ? 'results' : 'gallery';
+    const limit = Math.min(Math.max(Number(ctx.query('limit') ?? 60) || 60, 1), 60);
+    const list = gallery(store, { event: event.id, track: ctx.query('track') ?? undefined, sort: 'title' });
+    ctx.res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'self'; img-src 'self' data:; frame-ancestors *; form-action 'none'; base-uri 'none'");
+    ctx.res.removeHeader('X-Frame-Options');
+    ctx.html(embedPage({ event, view, projects: list.items.slice(0, limit), total: list.total, results: publishedResults(store, event)?.rows ?? null, base: ctx.config.publicUrl }));
   });
 
   // Certificates (T4): one per ranked project, signed, public once results are published.

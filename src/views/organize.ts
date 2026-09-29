@@ -1,4 +1,5 @@
 import type { AuditRow, ChainReport } from '../domain/audit.ts';
+import { embedSnippet } from './embed.ts';
 import type { CommitmentStatus } from '../domain/commitment.ts';
 import type { PairwiseSummary } from '../domain/compare.ts';
 import { pairwiseSection } from './compare.ts';
@@ -445,6 +446,11 @@ function chainNotice(chain: ChainReport): SafeHtml {
 export function exportPage(ctx: Ctx, event: EventRow): SafeHtml {
   return organizerPage(ctx, event, 'export', 'Export', html`
 <ul class="export-list">${EXPORT_KINDS.map((kind) => html`<li class="card"><h2 class="card-title">${kind}.csv</h2><p>${EXPORT_DESCRIPTIONS[kind]}</p>${linkButton(`/api/export.csv?event=${event.slug}&kind=${kind}`, 'Download', 'secondary', true)}</li>`)}</ul>
-<p class="hint">RFC 4180 CSV, UTF-8. Cells that a spreadsheet would run as a formula are prefixed with an apostrophe. The same files are available to scripts at <code>/api/export.csv?event=${event.slug}&amp;kind=…</code> with an organizer’s session.</p>`,
+<p class="hint">RFC 4180 CSV, UTF-8. Cells that a spreadsheet would run as a formula are prefixed with an apostrophe. The same files are available to scripts at <code>/api/export.csv?event=${event.slug}&amp;kind=…</code> with an organizer’s session.</p>
+<h2 id="embed">Embed on your site</h2>
+<p>Paste one of these into any web page. The widget shows only what the public gallery and results show, and opens projects in a new tab.</p>
+<p>Projects:</p><pre><code>${embedSnippet(ctx.config.publicUrl, event.slug, 'gallery')}</code></pre>
+<p>Results (appears once you publish):</p><pre><code>${embedSnippet(ctx.config.publicUrl, event.slug, 'results')}</code></pre>
+<p class="hint">Filter by track with <code>&amp;track=&lt;track id&gt;</code>. ${linkButton(`/embed/${event.slug}`, 'Preview the widget', 'secondary', true)}</p>`,
   { lead: 'Take your data with you at any stage, before or after publishing.' });
 }
