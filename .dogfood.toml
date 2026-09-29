@@ -5,7 +5,7 @@
 base_url = "http://localhost:3000"
 
 [tiers]
-claimed = ["T1", "T2", "T3"]
+claimed = ["T1", "T2", "T3", "T4"]
 pitch = "From first commit to final verdict: a self-hostable submission and judging portal with backend-enforced judge isolation and documented cross-judge normalization."
 
 [auth]

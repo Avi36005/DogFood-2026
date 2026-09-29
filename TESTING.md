@@ -15,6 +15,7 @@ npm run build       # production build and type check
 docker compose up -d
 npm run test:http   # the authorization matrix and CSRF, over real HTTP
 npm run test:browser # the whole lifecycle, accessibility, keyboard and layout, in Chrome
+./tests/t4-live.sh   # the T4 features, live: API, OpenAPI, bundle export and import, embed, verify
 ```
 
 `test:http` and `test:browser` drive a **running** instance. They need a Chrome

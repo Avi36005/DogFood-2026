@@ -244,8 +244,11 @@ independently recompute a published ranking.
 
 ## Getting data in
 
-Bulk import is **not implemented** — it is T4 work and is not claimed. The
-supported paths today are the interface and direct SQL against the file.
+A whole event moves as one JSON bundle (`forgeboard.bundle/1`): an organizer exports it from
+`GET /api/v1/events/:slug/export` and imports it with `POST /api/v1/events/:slug/import`. A dry run
+(`"dry_run": true`) validates every reference, score and criterion and writes nothing; a real import
+recomputes weighted scores from the criterion scores rather than trusting the file, and imported
+accounts cannot be signed into. The fixtures are loaded by `scripts/seed-fixtures.ts`.
 
 ## Backup and recovery
 

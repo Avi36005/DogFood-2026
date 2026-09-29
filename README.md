@@ -16,8 +16,9 @@ normalization and published results — in one product you run yourself.
 python3 run.py .dogfood.toml
 ```
 
-prints **7 of 7 PASS**: `claimed T1 T2 T3, verified T1 T2` (`run.py` has checks for T1 and T2
-only). The committed [`acceptance-report.txt`](acceptance-report.txt) is that output.
+prints **7 of 7 PASS**, `verified T1 T2`. `run.py` only has checks for T1 and T2, so T3 and T4
+are verified by our own tests (below). The committed [`acceptance-report.txt`](acceptance-report.txt)
+is that output.
 
 | Check | Route in `.dogfood.toml` |
 |---|---|
@@ -77,12 +78,12 @@ closed, judging under way, results computed but **not** published.
 
 | | |
 |---|---|
-| ![The landing page](docs/screenshots/01-landing.png) | ![A participant's dashboard](docs/screenshots/02-dashboard.png) |
+| ![The landing page](docs/screenshots/01-landing.png) | ![The organizer's dashboard](docs/screenshots/02-dashboard.png) |
 | The public page, with counts read from this instance's own database | The workspace: what is waiting on you, then progress, then the event |
 | ![The organizer console](docs/screenshots/03-organizer-overview.png) | ![A judge's workspace](docs/screenshots/04-judge-queue.png) |
-| Organizer overview: live counts, setup checklist, coverage gaps, judge progress | The judge's queue and the project under review |
-| ![The scoring audit](docs/screenshots/05-scoring-audit.png) | ![The public gallery](docs/screenshots/06-gallery.png) |
-| Raw against normalized, rank movement, and every exclusion named | The searchable gallery a visitor sees |
+| Organizer overview: live counts, setup checklist, coverage gaps, judge progress | A judge's queue: only their own assignments |
+| ![Results and judge calibration](docs/screenshots/05-scoring-audit.png) | ![The public gallery](docs/screenshots/06-gallery.png) |
+| Judge calibration: every judge left out of normalization is named, with the reason | The searchable gallery a visitor sees |
 
 Captured from the seeded demo event on this build.
 
@@ -104,8 +105,8 @@ It is not tidy, on purpose:
 |---|---|---|
 | **T1 — Core** | Complete | Auth with local password recovery, five roles, an event setup screen (dates, timezone, tracks, prizes, custom questions of five kinds, a checklist read from stored data), invite-link teams, draft-and-edit submissions, server-enforced deadlines, searchable public gallery |
 | **T2 — Judging** | Complete | Scoped single-use judge invitation links, judge removal that keeps submitted work, previewed batch assignment, organizer-configurable weighted rubrics, backend role and track isolation, eligibility decisions, polled progress with a stale indicator, documented normalization, CSV at every stage |
-| **T3 — Public** | Complete, one documented gap | Three voting access modes, per-voter randomised ballots, hidden totals until closed and published, rate limits, duplicate prevention by unique index, audited invalidation, comments with moderation. **Email-gated voting issues a real one-use expiring token but cannot deliver it — there is no mail server, so the operator distributes it.** |
-| **T4 — Stretch** | **Partial — not claimed** | Built: bundle import/export, Ed25519 signed participation records with a no-account verification page, embeddable gallery, webhooks (signed, SSRF-guarded, bounded retries), a 14-operation REST API with OpenAPI 3.1. Not built: API coverage of *every* UI action, PDF certificates, pairwise judging. `t4 = false`. |
+| **T3 — Public** | Complete, verified; one documented gap | Three voting access modes, per-voter randomised ballots, hidden totals until closed and published, rate limits, duplicate prevention by unique index, audited invalidation, comments with moderation. **Email-gated voting issues a real one-use expiring token but cannot deliver it — there is no mail server, so the operator distributes it.** |
+| **T4 — Stretch** | Complete, verified | All six T4 items in the spec: a REST API (14 operations, OpenAPI 3.1, scoped API keys), signed webhooks (SSRF-guarded, bounded retries), certificates of judging participation, verifiable judge records (Ed25519, checked on a public page without an account), an embeddable gallery, and bulk import and export of a whole event. Checked live by `tests/t4-live.sh` (10 of 10) and by the stretch unit tests. Not built, and beyond T4: API coverage of every UI action, PDF certificates (certificates are signed web pages), pairwise judging. |
 
 Bonus attempted: **Threat Model** (see `THREAT-MODEL.md`). The normalization
 work in `JUDGING.md` goes beyond what T2 requires and is evidenced on the
@@ -125,6 +126,10 @@ Honest accounting of the evidence behind the claims above:
   - 35 governance (rubric validation, event windows, question options, judge invitations, judge
     removal, conflict history, eligibility, assignment preview, audited admin
     override, password recovery)
+- `tests/t4-live.sh` against the running instance — **10 of 10 T4 checks pass**: the API root and
+  its OpenAPI 3.1 document, the public events list, organizer data refused without a login, the
+  whole-event bundle export (with no password hashes in it), a dry-run import of that bundle, the
+  embeddable gallery, the published signing key and the no-account verify page
 - `npm run build` — production build succeeds, no type errors
 - Every page renders against the seeded database
 - The authorization matrix, over real HTTP with real session cookies:

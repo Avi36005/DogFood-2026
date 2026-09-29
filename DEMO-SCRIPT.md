@@ -97,7 +97,8 @@ Say plainly:
 - T1, T2 and T3 are complete, with the one documented T3 gap: email-gated voting
   issues a real one-use token, but there is no mail server, so the operator
   delivers it.
-- T4 is **partial and not claimed**: the API does not cover every UI action.
+- T4 is complete: REST API, webhooks, certificates, verifiable judge records, the
+  embeddable gallery and bulk import and export. `tests/t4-live.sh` checks them live, 10 of 10.
 - **The official checker passes 7 of 7** (`python3 run.py .dogfood.toml`).
   131 of our own tests pass, the full lifecycle was driven in a real browser,
   and `TESTING.md` says exactly what that does and does not prove.
