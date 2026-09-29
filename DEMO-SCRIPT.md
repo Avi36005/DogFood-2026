@@ -31,7 +31,8 @@ the demo sign-ins. All passwords are `forgeboard-demo`. Use one browser window p
 | 4:15 | participant `priya1@example.org` | Sample Hack 2026 → **Vote for your favourites**: tick two projects, **Cast my ballot** | "Community vote. My own project is on the ballot but cannot be picked, the order is drawn for me alone, and the tally stays hidden until the organizers publish it." |
 | 4:25 | admin | Demo Night → **Results → Publish results** | "Publishing freezes the method, λ and weights, closes judging, and signs the result with Ed25519." |
 | 4:35 | organizer | Sample Hack 2026 → **Results → Publish results → Download signed results capsule**. Turn Wi-Fi off and open the file | "One HTML file, no server: it checks its own signature, its inputs and refits the ranking in the browser. Three green ticks." |
-| 4:50 | terminal | `python3 run.py .dogfood.toml` then `python3 scripts/t3_check.py .dogfood.toml` | "The official checker: T1 and T2 verified. Our T3 checks in the same format: 15 of 15." |
+| 4:45 | visitor | Sample Hack 2026 → **Results**, click **certificate** beside the winner | "T4: every project gets an Ed25519-signed certificate tied to the signed results. Judges download a signed record showing each of their reviews was counted at their value. Organizers get signed webhooks and an embeddable widget." |
+| 4:50 | terminal | `python3 run.py .dogfood.toml`, then `python3 scripts/t3_check.py .dogfood.toml` and `python3 scripts/t4_check.py .dogfood.toml` | "The official checker: T1 and T2 verified. Our T3 and T4 checks in the same format: 15 of 15 and 12 of 12." |
 
 If time is short, cut the prize, the second teammate and the Demo Night publish. Never cut the
 403, the deadline refusal, the certainty section or the capsule.

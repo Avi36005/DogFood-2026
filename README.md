@@ -8,13 +8,13 @@ DOGFOOD fixture data.
 
 | | |
 |---|---|
-| **Tiers** | Claims **T1 and T2**. The official checker says `claimed T1 T2, verified T1 T2` ([`acceptance-report.txt`](acceptance-report.txt)). **T3 is built too**: community voting, comments, hidden results, shuffled ballots and anti-abuse, checked by [`scripts/t3_check.py`](scripts/t3_check.py): 15 of 15 ([`acceptance-report-t3.txt`](acceptance-report-t3.txt)). It is recorded as evidence, not claimed, because the official checker has no T3 checks ([why](#why-t3-is-evidence-not-a-claim)) |
+| **Tiers** | Claims **T1 and T2**. The official checker says `claimed T1 T2, verified T1 T2` ([`acceptance-report.txt`](acceptance-report.txt)). **T3 and T4 are built too**, all of both: community voting, comments, hidden results, shuffled ballots and anti-abuse (T3, [`acceptance-report-t3.txt`](acceptance-report-t3.txt): 15 of 15), and the REST API, signed webhooks, signed certificates, verifiable judge records, an embeddable widget and bulk import (T4, [`acceptance-report-t4.txt`](acceptance-report-t4.txt): 12 of 12). Both are recorded as evidence, not claimed, because the official checker has no T3 or T4 checks ([why](#why-t3-and-t4-are-evidence-not-a-claim)) |
 | **One command** | `docker compose up`: seeded with the DOGFOOD fixtures, works with the network off |
 | **Dependencies** | **Zero at runtime.** Node 24's standard library (`node:http`, `node:sqlite`, `node:crypto`). No `npm install`, no build step |
-| **Tests** | **1,651 of our own, all passing** (`npm test`, about 20 s), including **one test per rule** on the spec page. With the official checker (7), our T3 checker (15) and a headless browser pass (16), that is **1,689 automated checks**, plus a network-off proof, all rerun by CI on every push. [How we tested](#how-we-tested) |
+| **Tests** | **1,801 of our own, all passing** (`npm test`, about 20 s), including **one test per rule** on the spec page. With the official checker (7), our T3 and T4 checkers (15 and 12) and a headless browser pass (16), that is **1,851 automated checks**, plus a network-off proof, all rerun by CI on every push. [How we tested](#how-we-tested) |
 | **Judging** | Weighted rubric, backend isolation, live dashboard, **additive judge offsets with ridge shrinkage** ([JUDGING.md](JUDGING.md)), **90% rank intervals and podium stability**, a **pairwise Bradley–Terry second opinion** with a judges' **compare mode**, CSV at every stage |
 | **Evidence** | Published results are **signed (Ed25519)** and ship as a **self-verifying capsule** that refits the ranking in any browser, offline. The audit trail is **hash-chained**, and the method is **fixed when the first score arrives** |
-| **Bonus work** | Normalization Proof ([JUDGING.md §3](JUDGING.md#3-normalization-correcting-for-harsh-and-generous-judges)), Pairwise Mode ([JUDGING.md](JUDGING.md#a-second-opinion-pairwise-with-bradleyterry)), Threat Model ([THREAT-MODEL.md](THREAT-MODEL.md)) and API First: every UI action is an API call, all 44 in [`/api/openapi.json`](#api-first-every-ui-action-is-an-api-call), held to the router and to every form by a test |
+| **Bonus work** | Normalization Proof ([JUDGING.md §3](JUDGING.md#3-normalization-correcting-for-harsh-and-generous-judges)), Pairwise Mode ([JUDGING.md](JUDGING.md#a-second-opinion-pairwise-with-bradleyterry)), Threat Model ([THREAT-MODEL.md](THREAT-MODEL.md)) and API First: every UI action is an API call, all 49 in [`/api/openapi.json`](#api-first-every-ui-action-is-an-api-call), held to the router and to every form by a test |
 | **Licence** | MIT |
 
 | | |
@@ -172,8 +172,8 @@ docker run --rm -v "$PWD":/app -w /app node:24-alpine npm test
 ```
 
 ```text
-ℹ tests 1651
-ℹ pass 1651
+ℹ tests 1801
+ℹ pass 1801
 ℹ fail 0
 ```
 
@@ -278,17 +278,30 @@ for two weeks from first boot, so all of it can be tried at once.
 | ![The organizer's community-vote tab: window and access, a flagged cluster of ballots from one address, and the private tally](docs/screens/organizer-voting.png) | ![A project page with comments and the author's Withdraw control](docs/screens/comments.png) |
 | **The organizer's view.** Settings that lock once voting starts, ballots from one address grouped for review, and a tally only organizers see until they publish | **Comments.** Signed-in, escaped, rate limited; authors withdraw, organizers hide with a reason |
 
-#### Why T3 is evidence, not a claim
+### Tier 4: stretch
 
-`run.py` has checks for T1 and T2 only, so any report that claims T3 ends with
-`note: claimed but not verified: T3`. We keep `.dogfood.toml` at `claimed = ["T1", "T2"]`, the
-tiers the official receipt can prove, and give T3 its own receipt in the same format:
-`python3 scripts/t3_check.py .dogfood.toml` against `docker compose up` prints 15 checks, committed
-as [`acceptance-report-t3.txt`](acceptance-report-t3.txt), and `tests/http/community.test.ts` covers
-the rest. If the organizers prefer T3 in the claim, it is one line.
+All six built and tested, also recorded as evidence rather than claimed. `python3 scripts/t4_check.py
+.dogfood.toml` against `docker compose up` prints **12 of 12**
+([`acceptance-report-t4.txt`](acceptance-report-t4.txt)), and CI reruns it on every push.
 
-**Not built:** T4's webhooks, certificates and embeddable gallery. Signed, verifiable results and
-the JSON API cover part of it. See [section 13](#13-honest-limitations).
+| Requirement | How Forgeboard does it |
+|---|---|
+| REST API | Every action in the UI is also a JSON call: all 49 actions and the reads are in **`/api/openapi.json`** (OpenAPI 3.1), held to the router and to every form by a test ([API first](#api-first-every-ui-action-is-an-api-call)) |
+| Webhooks | Organizers add a URL and pick events (project submitted or withdrawn, submissions closed, review submitted, results published or withdrawn, vote published). Deliveries are queued by the **audit trail itself, in the same transaction** as the change, so a change that rolls back never fires and a restart loses nothing. Each payload names its audit entry by **id and hash**, and never carries a review's scores. Signed **HMAC-SHA256** (`Forgeboard-Signature: t=…,v1=…`, replay window five minutes), **retried with exponential backoff** (30 s to 8 min, six attempts), with a test ping and a delivery log per attempt |
+| Certificates | One per ranked project at `/events/<slug>/certificates/<project>`: place, score, 90% rank interval and team, **Ed25519-signed**, quoting the SHA-256 of the signed results it came from. Deterministic, so the same snapshot always gives the same bytes |
+| Verifiable judge records | Each judge downloads a **signed record of their own reviews** and, once results are published, the rows of the signed inputs under their pseudonym, so they can check **every review was counted at the value they gave**. Readable by exactly the people who may read the scores. `POST /api/verify` and `cli.ts verify-record` check any record |
+| Embeddable widget | `/embed/<slug>` (gallery) and `?view=results`: no site chrome, for an `<iframe>`; organizers copy the snippet from the Export tab. The **only framable page**, with no script and no form, and it shows nothing the public pages do not |
+| Bulk import | Paste `name,email,tracks` lines to invite many judges at once. Every row follows the single-invite rules, the import is **one transaction** (one bad line and nothing is imported), and the refusal names every bad line. Whole events come in through `cli.ts import` (the fixtures format) |
+
+#### Why T3 and T4 are evidence, not a claim
+
+`run.py` has checks for T1 and T2 only, so any report that claims more ends with
+`note: claimed but not verified: T3 T4`. We keep `.dogfood.toml` at `claimed = ["T1", "T2"]`, the
+tiers the official receipt can prove, and give T3 and T4 their own receipts in the same format:
+[`acceptance-report-t3.txt`](acceptance-report-t3.txt) (15 of 15) and
+[`acceptance-report-t4.txt`](acceptance-report-t4.txt) (12 of 12), both rerun by CI against a fresh
+`docker compose up`, with 145 more tests behind them (`community`, `records`, `webhooks`, `embed` and
+`bulk-import` in `tests/http/`). If the organizers prefer T3 and T4 in the claim, it is one line.
 
 ---
 
@@ -481,7 +494,7 @@ the same function serves the HTML form, the JSON API and the tests.
 ├── .dogfood.toml           where things are, for the checker (claims T1 and T2)
 ├── acceptance-report.txt   the checker's output, committed
 ├── acceptance-report-t3.txt  scripts/t3_check.py's output (T3, same format), committed
-├── .github/workflows/ci.yml  types, tests, checker diff, signed-results verify, network off
+├── .github/workflows/ci.yml  types, tests, checker, T3 and T4 diffs, signed-results verify, network off
 ├── docker-compose.yml      one command, demo mode on
 ├── Dockerfile              node:24-alpine, no npm install, runs as a non-root user
 ├── LICENSE                 MIT
@@ -489,13 +502,13 @@ the same function serves the HTML form, the JSON API and the tests.
 ├── src/
 │   ├── server.ts  boot.ts  cli.ts  config.ts
 │   ├── http/      app, context (cookies, body, CSRF), router, rate limit, static files
-│   ├── routes/    public, auth, teams, judge, organize, community (vote, comments), admin, api
+│   ├── routes/    public, auth, teams, judge, organize, community (vote, comments), admin, api, openapi
 │   ├── domain/    the rules: access, accounts, events, teams, projects, judging, assignment,
 │   │              rubric, normalization, uncertainty, results, commitment, signing, evidence,
 │   │              pairwise, compare, voting, comments, progress, exports, fixtures,
-│   │              audit (hash-chained), demo
+│   │              audit (hash-chained), outbox and webhooks, records (certificates, judge records), demo
 │   ├── views/     HTML as escaped template literals; capsule.ts is the self-verifying results file
-│   ├── db/        store (prepared statements, transactions), migrations/001 schema, 002 evidence, 003 community, 004 pairwise
+│   ├── db/        store (prepared statements, transactions), migrations/001 schema, 002 evidence, 003 community, 004 pairwise, 005 webhooks
 │   └── util/      errors, forms, CSV, time, tokens
 ├── static/        app.css, app.js (about 70 lines of progressive enhancement), favicon
 ├── tests/
@@ -504,11 +517,12 @@ the same function serves the HTML form, the JSON API and the tests.
 │   └── http/      fixture sweep (every review, judge and project; signed-results tampering),
 │                  the rules (one test each), API first (OpenAPI against router and forms),
 │                  per item through the API and exports (projects, tracks, judges, export kinds),
+│                  T4 (records, webhooks, embed, bulk import),
 │                  checker, authorization matrix, lifecycle, organizer, security, crawl, buttons,
 │                  evidence (signed results, capsule, CLI), community (voting, codes, comments), compare
 ├── research/      the normalization and pairwise simulations and their seeded output
 ├── docs/screens/  the screenshots in this README
-└── scripts/       browser-check.ts (headless Chrome), offline-check.sh (network off), t3_check.py
+└── scripts/       browser-check.ts (headless Chrome), offline-check.sh (network off), t3_check.py, t4_check.py
 ```
 
 ---
@@ -520,9 +534,10 @@ All of these were run on the final code in this repository.
 | Check | Result | Reproduce with |
 |---|---|---|
 | Official checker against a fresh `docker compose up` | **7 of 7 PASS**, `claimed T1 T2, verified T1 T2`, byte-identical to the committed report | `python3 run.py .dogfood.toml` |
+| T4 checks, same style, after the T3 checks | **12 of 12 PASS** ([`acceptance-report-t4.txt`](acceptance-report-t4.txt)): OpenAPI for every action, a UI action answering JSON, bulk import and its all-or-nothing refusal, a webhook added, its signed ping and `results.published` delivered, a certificate verified, judge A's record showing every review counted, judge B refused it, the widget framable and nothing else | `python3 scripts/t4_check.py .dogfood.toml` |
 | T3 checks, same style, against `docker compose up` | **15 of 15 PASS** ([`acceptance-report-t3.txt`](acceptance-report-t3.txt)): ballot page public, tally hidden from public and participants, judges refused, own project refused, one ballot per account, shuffled order, comments signed-in and escaped, take-down refused to others, votes CSV, refusals audited | `python3 scripts/t3_check.py .dogfood.toml` |
-| CI on every push | Types, tests, the official checker diffed against the committed report, publish-then-verify of signed results, and the network-off check | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
-| Our test suite | **1,651 of 1,651 pass**: about 20 s in `node:24-alpine` ([how we tested](#how-we-tested)) | `npm test`, or the Docker command in [step 4](#step-4-run-our-tests-with-nothing-but-docker) |
+| CI on every push | Types, tests, the official checker and our T3 and T4 checkers each diffed against its committed report, publish-then-verify of signed results, and the network-off check | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
+| Our test suite | **1,801 of 1,801 pass**: about 20 s in `node:24-alpine` ([how we tested](#how-we-tested)) | `npm test`, or the Docker command in [step 4](#step-4-run-our-tests-with-nothing-but-docker) |
 | Type check | Clean under `strict`, `noUncheckedIndexedAccess` and `erasableSyntaxOnly` | `npm install && npm run typecheck` (TypeScript is a development dependency only) |
 | Real browser | **16 of 16**: sign-in by form, the phone menu, copy buttons, two-step confirms, the live dashboard refresh, keyboard scoring, and no JavaScript or console errors on any page | `npm run check:browser` (needs Chrome) |
 | Network off | Builds with `--network none`, runs with no network interface, serves gallery, scores and CSV; egress fails | `sh scripts/offline-check.sh` |
@@ -530,7 +545,7 @@ All of these were run on the final code in this repository.
 
 ### How we tested
 
-**1,651 tests, 0 failures, about 20 seconds**, in seven layers. Every test starts its own server on
+**1,801 tests, 0 failures, about 20 seconds**, in eight layers. Every test starts its own server on
 a random port with a throwaway database, so the suite never touches a running portal. Where a
 test needs an expected value, it computes it from `fixtures.json` itself rather than reading it
 back from the code under test.
@@ -540,8 +555,9 @@ back from the code under test.
 | **Fixture sweep, over HTTP** | **640** | Every one of the fixture's **126 reviews** reaches its own judge exactly as scored (criteria and comment), and appears once in the organizer's reviews export with the right weighted total (252). Each of the **30 judges** lists exactly their own reviews, and is refused all 29 other judges, with every refusal audited (60 tests, 870 refused requests). Each of the **41 projects** has the right public page and gallery link with no judge name or review text on it, a results row that matches an independent recomputation of its raw mean and review count, and a rank consistent with its score (122; the superseded duplicate `prj_07` is checked to be hidden and unranked). The **signed results** are attacked one piece at a time: nudging any of the 40 signed scores breaks the signature; re-signing a promoted score with a stranger's key passes the signature check but fails the refit, for all 40; changing any one of the 121 review inputs fails the fingerprint (205 with the setup checks). One more checks that the import supersedes exactly the duplicate | [`tests/http/sweep.test.ts`](tests/http/sweep.test.ts) |
 | **Property tests on random events** | **288** | 25 seeded random events (8–40 projects, 5–30 judges, planted judge bias), six properties each for the normalization: the fit solves its own normal equations; adding a constant or rescaling every score moves the result exactly as the maths says; review order and judge names change nothing; more shrinkage never enlarges the offsets (150). Six Bradley–Terry properties on 15 events: implied comparisons, convergence, proper win probabilities, order invariance, mirror symmetry, a planted champion ranks first (90). The audit chain pins an edit to each of 24 entries to that entry, and a removal of each of 23 to the entry after it (48) | [`tests/unit/properties.test.ts`](tests/unit/properties.test.ts) |
 | **Authorization matrix** | **207** | Every role (visitor, participant, judge A, judge B, organizer, administrator) against every protected T1 and T2 route and action, one test per cell (the T3 and compare-mode refusals have their own tests), so a failure names the exact route and role (205 cells). Then two checks: every administrator read landed on the event's audit trail, and none of the refused writes changed any data | [`tests/http/matrix.test.ts`](tests/http/matrix.test.ts) |
-| **API First** | **181** | The OpenAPI document against the router's own route table: every one of the 44 actions and every JSON read is documented, and nothing documented is missing from the router (one test per route, both ways). Every action, called by a signed-out script, answers JSON with a status the document lists for it (44). Every form the UI renders, crawled as nine different people, posts to a documented operation that describes every one of its fields. A form action sent as JSON answers JSON, the change is real, and a refusal is a JSON 403 | [`tests/http/openapi.test.ts`](tests/http/openapi.test.ts) |
+| **API First** | **201** | The OpenAPI document against the router's own route table: every one of the 49 actions and every JSON read is documented, and nothing documented is missing from the router (one test per route, both ways). Every action, called by a signed-out script, answers JSON with a status the document lists for it (49). Every form the UI renders, crawled as nine different people, posts to a documented operation that describes every one of its fields. A form action sent as JSON answers JSON, the change is real, and a refusal is a JSON 403 | [`tests/http/openapi.test.ts`](tests/http/openapi.test.ts) |
 | **Per item, through the API and exports** | **151** | Every fixture project as the public JSON API shows it, with no review data (41); every track filter returns exactly its projects (8); the organizer reads every judge's scores exactly as filed (30); an administrator reads them too, each read audited (30); every CSV export kind against every role (42) | [`tests/http/coverage.test.ts`](tests/http/coverage.test.ts) |
+| **T4: records, webhooks, widget, bulk import** | **130** | Every ranked project's signed certificate verifies and matches the signed results, and is deterministic (40); every judge's signed record lists exactly their reviews and shows each counted at their value (30); who may read a record; tampering and a forger's own key caught by `POST /api/verify` and the offline CLI. Webhooks against a real local receiver: signatures checked independently, stale or wrong ones refused, the audit id and hash in the payload, nothing fired by a change that rolls back, no scores in a review payload, backoff timing and giving up after six attempts, removal. The widget framable while every other page is not, with nothing the public pages hide. Bulk import all or nothing, every bad line named | `records`, `webhooks`, `embed`, `bulk-import` in [`tests/http/`](tests/http/) |
 | **The rules, one test each** | **25** | The five required things on the spec page (one-command seeded portal with no network dependency, OSI licence, every commit after kickoff, honest `.dogfood.toml`, the committed report and unmodified `run.py` and `fixtures.json`), the four documents, and the kickoff message's first-hour tips: the fixture's own close date, the four auth headers printed at boot, the report committed and rerun by CI | [`tests/http/rules.test.ts`](tests/http/rules.test.ts) |
 | **Behaviour, lifecycle and security** | **159** | The official checker's seven behaviours with their reasons, the full lifecycle through the real forms, a crawl of every link and button, security, the importer, schema rules, hand-computed maths, certainty, pairwise, T3 and evidence: listed below | the other 17 files in [`tests/`](tests/) |
 
@@ -552,7 +568,7 @@ tests (every judge's peer check). Both changes were reverted; the numbers above 
 as committed.
 
 **Beyond `npm test`**, every push reruns in CI: the official `run.py` (**7 of 7**, byte-identical
-to the committed report), our T3 checker (**15 of 15**), publish-then-verify of the signed results
+to the committed report), our T3 and T4 checkers (**15 of 15** and **12 of 12**), publish-then-verify of the signed results
 and the audit chain, and the network-off build and run. The **16-check** headless Chrome pass
 (`npm run check:browser`) covers what only a real browser shows.
 
@@ -690,7 +706,7 @@ curl -s -H 'Cookie: session=org_demo_7f2a9c41d8e3b6a5' -H 'Content-Type: applica
 ```
 
 [`GET /api/openapi.json`](http://localhost:8080/api/openapi.json) is the **OpenAPI 3.1** document
-for all of it: the JSON reads and **all 44 actions** (sign-up to publishing), each with who may
+for all of it: the JSON reads and **all 49 actions** (sign-up to publishing, webhooks and bulk import), each with who may
 call it, its fields and its error codes. It is not written by hand and left to drift:
 [`tests/http/openapi.test.ts`](tests/http/openapi.test.ts) builds the router's own route table and
 fails if any route is undocumented or any documented route does not exist, then crawls every page
@@ -705,7 +721,7 @@ You need **Node 24 or later**: it runs TypeScript directly and ships SQLite.
 ```sh
 FORGEBOARD_DEMO=1 npm start      # http://localhost:8080, data in ./data/forgeboard.db
 npm run dev                      # the same, restarting on changes, data in ./data/dev.db
-npm test                         # 1,651 tests
+npm test                         # 1,801 tests
 npm install && npm run typecheck   # type check; installs TypeScript, the only (dev) dependency
 npm run check:browser            # the 16 headless Chrome checks
 npm run check:offline            # the network-off proof (needs Docker)
@@ -736,7 +752,7 @@ forward-only migration, `src/db/migrations/002_….sql`; the shipped schema is n
 
 | Criterion | Weight | Evidence in this repository |
 |---|---|---|
-| **Tier completion and correctness** | 40% | [`acceptance-report.txt`](acceptance-report.txt): 7 of 7. [`.dogfood.toml`](.dogfood.toml) claims exactly T1 and T2; T3 is built with its own 15-check receipt ([`acceptance-report-t3.txt`](acceptance-report-t3.txt)), and [section 13](#13-honest-limitations) lists what is missing. 1,651 tests ([how we tested](#how-we-tested)), including every fixture review, judge and project swept over HTTP and the lifecycle through the real forms |
+| **Tier completion and correctness** | 40% | [`acceptance-report.txt`](acceptance-report.txt): 7 of 7. [`.dogfood.toml`](.dogfood.toml) claims exactly T1 and T2; T3 and T4 are built in full, each with its own receipt in the same format ([`acceptance-report-t3.txt`](acceptance-report-t3.txt): 15 of 15; [`acceptance-report-t4.txt`](acceptance-report-t4.txt): 12 of 12), and [section 13](#13-honest-limitations) lists what is missing. 1,801 tests ([how we tested](#how-we-tested)), including every fixture review, judge and project swept over HTTP and the lifecycle through the real forms |
 | **Judging integrity** | 25% | Isolation in the domain layer, tested as a matrix ([section 4](#4-who-can-see-what-backend-enforced-isolation)). A normalization method with evidence and stated limits, rank intervals and a leave-one-judge-out check ([JUDGING.md](JUDGING.md)). The method fixed when scoring starts. Signed results that verify and refit offline. A hash-chained, append-only audit trail an organizer reads in plain sentences, including refused attempts. Abuse considered up front ([THREAT-MODEL.md](THREAT-MODEL.md)) |
 | **Adoptability and operability** | 20% | One command, network off, seeded with the fixtures. Zero runtime dependencies. Production steps, settings, backup and recovery ([section 8](#8-running-it-for-a-real-event)). Import and export at every stage ([section 9](#9-getting-data-in-and-out)). MIT |
 | **Code quality and innovation** | 15% | One-way layering, a schema that enforces its own invariants ([DATA-MODEL.md](DATA-MODEL.md)), strict TypeScript with no build step, and the decisions in [ARCHITECTURE.md](ARCHITECTURE.md), each with the cost we accepted |
@@ -747,15 +763,21 @@ forward-only migration, `src/db/migrations/002_….sql`; the shipped schema is n
 |---|---|
 | Normalization Proof | **Done.** The method, derivation, worked example, simulation evidence on the fixture's layout and the fixture's numbers are in [JUDGING.md §3](JUDGING.md#3-normalization-correcting-for-harsh-and-generous-judges). Raw and normalized scores and rank changes are on the organizer's Results page and in the results CSV, with 90% rank intervals and a leave-one-judge-out check. Published results are signed and refit themselves in the results capsule |
 | Threat Model | **Done.** [THREAT-MODEL.md](THREAT-MODEL.md): late teams, curious judges, colluding judges, organizers under pressure, ballot stuffing, code guessing, sock puppets, bandwagons, position bias, comment trolls, credential stuffing, CSRF, injected scripts, CSV formulas, session theft and history rewrites, each with where it is stopped, plus what is *not* defended |
-| API First | Partial and **not claimed**: the JSON API covers reads and the main writes, but not every UI action, and there is no OpenAPI document |
+| API First | **Done.** Every UI action is a JSON call, and all 49 plus the reads are in [`/api/openapi.json`](#api-first-every-ui-action-is-an-api-call) (OpenAPI 3.1). `tests/http/openapi.test.ts` holds the document to the router's route table in both directions, checks every action's documented errors, and crawls every page as nine people to fail on any form field the document does not describe |
 | Pairwise Mode | **Done.** A Bradley–Terry fit (MM algorithm, with a prior) over comparisons implied by each judge's own scores plus judges' choices in **compare mode**, which serves the least-compared, closest pair among a judge's assignments. Shown beside the rubric ranking with Spearman agreement; on the fixture ρ = 0.87 and the same winner. A seeded study on the fixture's layout shows why it is the second opinion, not the default ([JUDGING.md](JUDGING.md#a-second-opinion-pairwise-with-bradleyterry)) |
 
 ---
 
 ## 13. Honest limitations
 
-- **T4 is not built**: no webhooks, certificates or embeddable widget. T3 is built but claimed only
-  as evidence (see [Why T3 is evidence](#why-t3-is-evidence-not-a-claim)).
+- **T3 and T4 are built but claimed only as evidence** (see
+  [why](#why-t3-and-t4-are-evidence-not-a-claim)): their receipts are our own scripts, in the official
+  format, because `run.py` has no checks for them.
+- **Webhooks are delivered at least once.** A receiver that answers after our five-second timeout
+  may see the same delivery again; the `Forgeboard-Delivery` id lets it drop duplicates. They go to
+  any http(s) address the organizer enters, including machines on the organizer's own network.
+- **Bulk import covers judges.** Whole events (teams, projects, scores) come in through `cli.ts
+  import` in the fixtures format, not through a web form.
 - **Voting in accounts mode is only as strong as sign-up.** Anyone can create accounts, so one
   person can vote several times from several accounts; address clusters and voiding make it
   visible, not impossible. For a real event, use voter codes. A code handed to someone else is
