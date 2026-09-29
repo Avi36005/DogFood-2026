@@ -221,3 +221,68 @@ export function publishResults(store: Store, actor: Actor, event: EventRow): str
   });
 }
 
+export function unpublishResults(store: Store, actor: Actor, event: EventRow): void {
+  requireOrganizer(store, actor, event, `withdraw the results of ${event.name}`);
+  if (!event.results_published_at) throw conflict('Results are not published.');
+  store.tx(() => {
+    const now = iso(actor.now);
+    store.run('UPDATE result_snapshots SET superseded_at = ? WHERE event_id = ? AND superseded_at IS NULL', [now, event.id]);
+    store.run('UPDATE events SET results_published_at = NULL, updated_at = ? WHERE id = ?', [now, event.id]);
+    record(store, actor, {
+      eventId: event.id,
+      action: 'results.withdrawn',
+      subjectType: 'event',
+      subjectId: event.id,
+      summary: 'Withdrew the published results. Judging stays closed until the judging close date is changed in settings.',
+    });
+  });
+}
+
+export interface PublishedRow {
+  project_id: string;
+  title: string;
+  team_name: string;
+  track_name: string | null;
+  rank: number;
+  score: number;
+  raw_mean: number;
+  review_count: number;
+  low_coverage: 0 | 1;
+}
+
+export interface Snapshot {
+  id: string;
+  method: string;
+  lambda: number;
+  weights: string;
+  review_count: number;
+  published_at: string;
+  superseded_at: string | null;
+  published_by_name: string | null;
+}
+
+/** The public view: only when the event says results are published. */
+export function publishedResults(store: Store, event: EventRow): { snapshot: Snapshot; rows: PublishedRow[] } | null {
+  if (!event.results_published_at) return null;
+  const snapshot = store.get<Snapshot>(
+    `SELECT s.*, u.name AS published_by_name FROM result_snapshots s LEFT JOIN users u ON u.id = s.published_by
+     WHERE s.event_id = ? AND s.superseded_at IS NULL`,
+    [event.id],
+  );
+  if (!snapshot) return null;
+  const rows = store.all<PublishedRow>(
+    `SELECT r.project_id, p.title, t.name AS team_name, tr.name AS track_name, r.rank, r.score, r.raw_mean, r.review_count, r.low_coverage
+     FROM result_rows r JOIN projects p ON p.id = r.project_id JOIN teams t ON t.id = p.team_id LEFT JOIN tracks tr ON tr.id = p.track_id
+     WHERE r.snapshot_id = ? ORDER BY r.rank, p.title`,
+    [snapshot.id],
+  );
+  return { snapshot, rows };
+}
+
+export function listSnapshots(store: Store, eventId: string): Snapshot[] {
+  return store.all<Snapshot>(
+    `SELECT s.*, u.name AS published_by_name FROM result_snapshots s LEFT JOIN users u ON u.id = s.published_by
+     WHERE s.event_id = ? ORDER BY s.published_at DESC`,
+    [eventId],
+  );
+}
