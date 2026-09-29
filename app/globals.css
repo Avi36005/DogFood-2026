@@ -316,3 +316,18 @@ select.fb-select {
   background-size: 48px 48px;
   mask-image: linear-gradient(to bottom, black, transparent);
 }
+
+
+/* Working-page motion. Transform only (never opacity), so text contrast is never
+   measured mid-fade, and the reduced-motion rule above flattens all of it. */
+@keyframes fb-rise { from { transform: translateY(10px); } to { transform: translateY(0); } }
+.fb-page { animation: fb-rise 420ms cubic-bezier(.2, .8, .2, 1) both; }
+.fb-page [data-slot="card"] {
+  transition: transform 220ms cubic-bezier(.2, .8, .2, 1), box-shadow 220ms ease, border-color 220ms ease;
+}
+.fb-page [data-slot="card"]:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 30px -12px rgb(0 0 0 / 0.18);
+}
+.fb-page table tbody tr { transition: background-color 160ms ease; }
+.fb-page a { transition: color 160ms ease, background-color 160ms ease; }

@@ -61,16 +61,13 @@ function Nav({ groups, onNavigate }: { groups: NavGroup[]; onNavigate?: () => vo
                     href={it.href}
                     onClick={onNavigate}
                     aria-current={on ? "page" : undefined}
-                    // Selected is the brand green; pressing anything is still black.
-                    className={`group relative flex h-10 items-center gap-3 rounded-full px-3 text-sm transition-colors ${
+                    // Selected is black, like anything pressed.
+                    className={`group relative flex h-10 items-center gap-3 rounded-full px-3 text-sm transition-all duration-200 ${
                       on
-                        ? "bg-brand-soft font-medium text-brand-ink"
-                        : "text-muted-foreground hover:bg-secondary hover:text-foreground active:bg-foreground active:text-background"
+                        ? "bg-foreground font-medium text-background shadow-sm"
+                        : "text-muted-foreground hover:translate-x-0.5 hover:bg-secondary hover:text-foreground active:bg-foreground active:text-background"
                     }`}
                   >
-                    {on ? (
-                      <span aria-hidden className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-brand" />
-                    ) : null}
                     <Icon className="h-[17px] w-[17px] shrink-0" aria-hidden />
                     <span className="truncate">{it.label}</span>
                     {it.badge ? (

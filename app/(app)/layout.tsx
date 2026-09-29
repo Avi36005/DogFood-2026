@@ -18,7 +18,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
     return (
       <div className="app-light min-h-screen">
         <PublicBar />
-        {children}
+        <div className="fb-page">{children}</div>
       </div>
     );
   }
@@ -68,7 +68,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
         groups={groups}
         user={{ name: actor.displayName, detail: actor.globalRole === "admin" ? "Instance admin" : actor.email }}
       />
-      <div className="lg:pl-[17.5rem]">{children}</div>
+      <div className="lg:pl-[17.5rem]"><div className="fb-page">{children}</div></div>
     </div>
   );
 }
