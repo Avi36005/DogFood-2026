@@ -161,3 +161,63 @@ export function computeStandings(store: Store, event: EventRow, lambda = DEFAULT
   };
 }
 
+function groupScores(observations: Observation[], key: (o: Observation) => string): Map<string, number[]> {
+  const out = new Map<string, number[]>();
+  for (const obs of observations) {
+    const list = out.get(key(obs)) ?? [];
+    list.push(obs.score);
+    out.set(key(obs), list);
+  }
+  return out;
+}
+
+// Publishing ----------------------------------------------------------------------------
+
+/**
+ * Freezes the ranking into a snapshot with the method, lambda and weights that produced it,
+ * closes judging, and makes the results public. Publishing again supersedes the previous
+ * snapshot; both stay on record.
+ */
+export function publishResults(store: Store, actor: Actor, event: EventRow): string {
+  const organizer = requireOrganizer(store, actor, event, `publish the results of ${event.name}`);
+  const now = iso(actor.now);
+  if (now < event.submissions_close_at) throw conflict(`Submissions are still open until ${formatUtc(event.submissions_close_at)}. Close them first.`);
+  return store.tx(() => {
+    const result = computeStandings(store, event);
+    if (result.reviewCount === 0) throw conflict('There are no submitted reviews to publish.');
+    const id = newId('res');
+    store.run('UPDATE result_snapshots SET superseded_at = ? WHERE event_id = ? AND superseded_at IS NULL', [now, event.id]);
+    store.run(
+      `INSERT INTO result_snapshots (id, event_id, method, lambda, weights, review_count, published_at, published_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, event.id, result.method, result.lambda, JSON.stringify(Object.fromEntries(result.weights.map((w) => [w.key, w.weight]))), result.reviewCount, now, organizer.id],
+    );
+    for (const s of result.standings) {
+      if (s.rank === null || s.score === null || s.raw_mean === null) continue;
+      store.run(
+        'INSERT INTO result_rows (snapshot_id, project_id, rank, score, raw_mean, review_count, low_coverage) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [id, s.project_id, s.rank, s.score, s.raw_mean, s.review_count, s.low_coverage ? 1 : 0],
+      );
+    }
+    for (const j of result.judges) {
+      store.run('INSERT INTO result_judge_offsets (snapshot_id, judge_id, offset, review_count) VALUES (?, ?, ?, ?)', [id, j.judge_id, j.offset, j.review_count]);
+    }
+    store.run(
+      `UPDATE events SET results_published_at = $now,
+         judging_close_at = CASE WHEN judging_close_at IS NULL OR judging_close_at > $now THEN $now ELSE judging_close_at END,
+         updated_at = $now WHERE id = $id`,
+      { now, id: event.id },
+    );
+    const top = result.standings.filter((s) => s.rank !== null).slice(0, 3).map((s) => `${s.rank}. ${s.title}`).join(', ');
+    record(store, actor, {
+      eventId: event.id,
+      action: 'results.published',
+      subjectType: 'result_snapshot',
+      subjectId: id,
+      summary: `Published results from ${result.reviewCount} reviews with ${result.method}, lambda ${result.lambda}. Top: ${top}.`,
+      detail: { weights: result.weights, mu: result.mu },
+    });
+    return id;
+  });
+}
+
