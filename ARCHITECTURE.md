@@ -61,9 +61,22 @@ check it needs:
 
 A route that forgot a check could not leak: the function it calls refuses the caller. The
 queries themselves are scoped where it matters. A judge's queue is `WHERE a.judge_id = <the
-caller>`, and there is no parameter to ask for someone else's. Two pure modules have no database
-access at all and are tested alone: `domain/normalization.ts` (the model fit) and
+caller>`, and there is no parameter to ask for someone else's. Three pure modules have no database
+access at all and are tested alone: `domain/normalization.ts` (the model fit),
+`domain/uncertainty.ts` (rank intervals, leave-one-judge-out, the prize line),
+`domain/pairwise.ts` (Bradley–Terry, implied comparisons, the pair picker) and
 `domain/assignment.ts` (the planner).
+
+Evidence is built from the standard library too: `domain/audit.ts` chains entries with SHA-256,
+`domain/commitment.ts` fingerprints the method when scoring starts, `domain/signing.ts` holds the
+Ed25519 key (`node:crypto`), `domain/evidence.ts` builds, parses and verifies the signed results
+document, and `views/capsule.ts` renders the self-verifying results file, whose inline checker
+restates the fit in 30 lines so it can run with no server.
+
+The public tier follows the same shape: `domain/voting.ts` (settings, codes, ballots, the
+per-voter shuffle, tallies, clusters) and `domain/comments.ts` hold every rule, and
+`routes/community.ts` only parses and renders. The tally's visibility is decided in the domain,
+so the page, the JSON API and the CSV cannot disagree about who may see it.
 
 ## Decisions worth defending
 

@@ -5,8 +5,12 @@
 base_url = "http://localhost:8080"
 
 [tiers]
+# T3 is built as well (community vote, comments, hidden tallies, shuffled ballots, anti-abuse).
+# It is not claimed here because run.py has no T3 checks, so a claim could only ever print as
+# "claimed but not verified". Its receipt, in the same format:
+#   python3 scripts/t3_check.py .dogfood.toml > acceptance-report-t3.txt   (15 checks)
 claimed = ["T1", "T2"]
-pitch = "A self-hosted hackathon portal with zero runtime dependencies, backend-enforced judge isolation, and a judge-bias correction chosen and proven on the fixture data."
+pitch = "A self-hosted hackathon portal with zero runtime dependencies, backend-enforced judge isolation, a judge-bias correction proven on the fixture data, and signed results that verify themselves offline."
 
 [auth]
 # Fixed demo sessions, created only when FORGEBOARD_DEMO=1 (docker-compose.yml sets it).

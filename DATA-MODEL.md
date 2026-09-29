@@ -71,17 +71,30 @@ users ─┬─ sessions            events ─┬─ tracks ─── prizes
 
 | Table | Purpose | Rules it carries |
 |---|---|---|
-| `result_snapshots` | A published ranking: method, λ, weights (JSON), review count, who and when | At most one current snapshot per event (a partial unique index). Older ones are kept with `superseded_at` |
-| `result_rows` | Rank, normalized score, raw mean, review count and low-coverage flag per project | |
+| `result_snapshots` | A published ranking: method, λ, weights (JSON), review count, who and when; the signed results document (exact text), its Ed25519 signature and public key, and the model's inputs (pseudonymized, JSON) | At most one current snapshot per event (a partial unique index). Older ones are kept with `superseded_at`. The inputs are never selected into public responses |
+| `result_rows` | Rank, normalized score, raw mean, review count, low-coverage flag, 90% rank interval (`rank_lo`, `rank_hi`) and top-three share per project | |
 | `result_judge_offsets` | Each judge's fitted offset in that snapshot | Makes a published ranking reproducible |
-| `audit_log` | Every change and every refused attempt: when, who (id and a readable label), event, action, subject, a one-sentence summary, JSON detail, IP | **Append-only** (triggers reject `UPDATE` and `DELETE`). It has no foreign keys on purpose: the record must outlive what it describes |
+| `audit_log` | Every change and every refused attempt: when, who (id and a readable label), event, action, subject, a one-sentence summary, JSON detail, IP, and `prev_hash`/`hash` | **Append-only** (triggers reject `UPDATE` and `DELETE`) and **hash-chained**: `hash` = SHA-256 of `prev_hash` and the entry's fields, so an edit made around the triggers shows. It has no foreign keys on purpose: the record must outlive what it describes |
 
-JSON appears in exactly three places, each an immutable record rather than a data model:
+### Community (T3)
+
+| Table | Purpose | Rules it carries |
+|---|---|---|
+| `vote_settings` | One per event with a community vote: window, access (`accounts` or `codes`), approvals per ballot, when the tally was published | `closes_at > opens_at`; `max_picks` 1–10 |
+| `voter_codes` | One-time voter codes, by batch | Stored only as SHA-256 hashes; `used_at` set once, in the ballot's transaction |
+| `ballots` | One per voter: account **or** code, time, keyed hashes of address and browser, void reason | Exactly one of account and code (a `CHECK`); **one per account per event** and **one per code** (partial unique indexes); voided only with a reason |
+| `ballot_picks` | The projects a ballot approves | **Final**: triggers reject `UPDATE` and `DELETE` |
+| `comments` | Comments on projects | 1–2,000 characters; hidden only with a reason and who hid it, never deleted |
+| `pairwise_votes` | Compare mode: which of two assigned projects a judge chose | **One per judge per unordered pair** (an expression index over `min`/`max` of the two ids); **final** (triggers) |
+
+JSON appears in exactly five places, each an immutable record rather than a data model:
 - `project_revisions.snapshot`
-- `result_snapshots.weights`
+- `result_snapshots.weights`, `result_snapshots.document` (the signed text) and `result_snapshots.inputs`
 - `audit_log.detail`
 
-All three are checked with `json_valid`.
+All five are checked with `json_valid`. Migration `002_evidence.sql` adds the chain, interval and
+signature columns with `ALTER TABLE … ADD COLUMN`, so an existing database upgrades in place;
+audit entries written before it are reported as unchained, never silently accepted.
 
 ## Rules the database enforces, whatever the code does
 

@@ -8,13 +8,21 @@ DOGFOOD fixture data.
 
 | | |
 |---|---|
-| **Tiers** | Claims **T1 and T2**. The official checker says `claimed T1 T2, verified T1 T2` ([`acceptance-report.txt`](acceptance-report.txt)) |
+| **Tiers** | Claims **T1 and T2**. The official checker says `claimed T1 T2, verified T1 T2` ([`acceptance-report.txt`](acceptance-report.txt)). **T3 is built too**: community voting, comments, hidden results, shuffled ballots and anti-abuse, checked by [`scripts/t3_check.py`](scripts/t3_check.py): 15 of 15 ([`acceptance-report-t3.txt`](acceptance-report-t3.txt)). It is recorded as evidence, not claimed, because the official checker has no T3 checks ([why](#why-t3-is-evidence-not-a-claim)) |
 | **One command** | `docker compose up`: seeded with the DOGFOOD fixtures, works with the network off |
 | **Dependencies** | **Zero at runtime.** Node 24's standard library (`node:http`, `node:sqlite`, `node:crypto`). No `npm install`, no build step |
-| **Tests** | **145 of our own** (`npm test`), plus a 16-check headless browser pass and a network-off proof |
-| **Judging** | Weighted rubric, backend isolation, live dashboard, **additive judge offsets with ridge shrinkage** ([JUDGING.md](JUDGING.md)), CSV at every stage |
-| **Bonus work** | Normalization Proof ([JUDGING.md §3](JUDGING.md#3-normalization-correcting-for-harsh-and-generous-judges)) and Threat Model ([THREAT-MODEL.md](THREAT-MODEL.md)) |
+| **Tests** | **197 of our own** (`npm test`), plus a 16-check headless browser pass and a network-off proof |
+| **Judging** | Weighted rubric, backend isolation, live dashboard, **additive judge offsets with ridge shrinkage** ([JUDGING.md](JUDGING.md)), **90% rank intervals and podium stability**, a **pairwise Bradley–Terry second opinion** with a judges' **compare mode**, CSV at every stage |
+| **Evidence** | Published results are **signed (Ed25519)** and ship as a **self-verifying capsule** that refits the ranking in any browser, offline. The audit trail is **hash-chained**, and the method is **fixed when the first score arrives** |
+| **Bonus work** | Normalization Proof ([JUDGING.md §3](JUDGING.md#3-normalization-correcting-for-harsh-and-generous-judges)), Pairwise Mode ([JUDGING.md](JUDGING.md#a-second-opinion-pairwise-with-bradleyterry)) and Threat Model ([THREAT-MODEL.md](THREAT-MODEL.md)) |
 | **Licence** | MIT |
+
+| | |
+|---|---|
+| ![Organizer results: normalized ranking with raw means, rank movement, 90% likely places and top-three share](docs/screens/results-certainty.png) | ![Public results: signature valid, method unchanged, podium stability](docs/screens/public-results-verified.png) |
+| **Results, with how sure they are.** Normalized next to raw, a 90% range for every place, and the top-three share | **Public results you can check.** Signature valid, method unchanged since scoring began, and a signed JSON download |
+| ![A voter's ballot: projects in an order drawn for that voter, up to three approvals](docs/screens/ballot.png) | ![The results capsule opened offline: signature, inputs fingerprint and refit all pass](docs/screens/capsule.png) |
+| **The community vote.** Each voter sees their own order and approves up to three projects | **The results capsule, opened with no server.** It checks its own signature, its inputs and a refit of the ranking |
 
 ## Contents
 
@@ -164,12 +172,12 @@ docker run --rm -v "$PWD":/app -w /app node:24-alpine npm test
 ```
 
 ```text
-ℹ tests 145
-ℹ pass 145
+ℹ tests 197
+ℹ pass 197
 ℹ fail 0
 ```
 
-It takes about 15 seconds. The tests start their own servers on random ports with throwaway
+It takes about 16 seconds. The tests start their own servers on random ports with throwaway
 databases, so they never touch the running portal or its data.
 
 ### Step 5: prove the network-off rule (optional)
@@ -214,10 +222,10 @@ out and back in.
 | Role | Sign in as | What to try |
 |---|---|---|
 | **Administrator** | `admin@forgeboard.local` | **Events → Create an event** with a deadline ten minutes away, then run the whole lifecycle on it |
-| **Organizer** | `organizer@forgeboard.local` | Sample Hack 2026: the live **Overview**, **Rubric** weights, **Assignments → Fill gaps automatically**, **Results** (raw vs normalized), **Audit trail**, **Export** |
-| **Judge A** | `diego.herrera@example.org` (`jdg_24`, 11 reviews) | The judging queue, and the scoring form (arrow keys move between scores) |
+| **Organizer** | `organizer@forgeboard.local` | Sample Hack 2026: the live **Overview**, **Rubric** weights, **Assignments → Fill gaps automatically**, **Results** (raw vs normalized, rank intervals, publish and download the signed capsule), **Community vote** (the private tally, ballot clusters, voter codes), **Audit trail**, **Export** |
+| **Judge A** | `diego.herrera@example.org` (`jdg_24`, 11 reviews) | The judging queue, the scoring form (arrow keys move between scores), and **Compare mode**: which of two of your projects is better |
 | **Judge B** | `ines.rocha@example.org` (`jdg_29`, shares no project with judge A) | Open one of judge A's review URLs: 403 |
-| **Participant** | `priya1@example.org` (captain of NorthKiln, "Glass Signal") | The team page; the closed event refuses every change, by page and by API |
+| **Participant** | `priya1@example.org` (captain of NorthKiln, "Glass Signal") | The team page; the closed event refuses every change, by page and by API. **Vote** in the open community vote (your own project is on the ballot but cannot be picked), and comment on a project |
 | **Visitor** | nobody | The gallery: search, event and track filters and ordering, all in the URL so they can be shared |
 
 ---
@@ -252,8 +260,35 @@ offset), so a published ranking can be reproduced later. Republishing supersedes
 without deleting it. The audit trail is readable by an organizer without a database client and is
 append-only *in the database*: triggers reject `UPDATE` and `DELETE`.
 
-**Not claimed:** T3 (community voting, comments) and T4 (webhooks, certificates, embeds). See
-[section 13](#13-honest-limitations).
+### Tier 3: public
+
+Built and tested, recorded as evidence rather than claimed (see below). Demo mode opens a vote
+for two weeks from first boot, so all of it can be tried at once.
+
+| Requirement | How Forgeboard does it |
+|---|---|
+| Community voting with configurable access | **Approval voting with a budget**: each ballot approves up to N projects (3 by default), which a loud minority cannot split or stack. Two access modes: **signed-in accounts**, or **one-time voter codes** the organizer prints for the venue, our offline answer to "email-gated" (no mail server, one code is one ballot, stored only as a hash). No open-link mode: a link anyone can use cannot be defended |
+| Comments on gallery projects | Any signed-in account comments on a public project. Authors can withdraw; organizers hide with a written reason. Hidden comments stay on record, marked, for organizers. Escaped everywhere, rate limited per account |
+| Results hidden during voting | The tally is visible **only to organizers**, in the backend (pages and `GET /api/events/{id}/vote` alike), until voting has closed **and** an organizer publishes it after reviewing the ballots |
+| Randomised ballot order | Every voter gets their own order: a Fisher–Yates shuffle seeded from an HMAC of the event and the voter. Stable on reload, so reloading cannot fish for a position; different between voters. A test checks each of 8 projects leads about 1 in 8 of 4,000 simulated ballots |
+| Anti-abuse that means something | The window is checked on the server clock inside the ballot's transaction. **One ballot per account and per code** (unique indexes); **picks are final** (triggers). Judges and organizers cannot vote; nobody can approve their own team's project. Wrong codes are limited per address (only failures count, so a venue behind one address is never throttled), and ballots have a flood limit. Ballots from one address are **grouped for review** (flagged, not refused, since a venue shares one address), and an organizer can **void** a ballot with a reason. Every cast, refusal, void and publication is on the audit trail, and every ballot is in the `votes` CSV |
+
+| | |
+|---|---|
+| ![The organizer's community-vote tab: window and access, a flagged cluster of ballots from one address, and the private tally](docs/screens/organizer-voting.png) | ![A project page with comments and the author's Withdraw control](docs/screens/comments.png) |
+| **The organizer's view.** Settings that lock once voting starts, ballots from one address grouped for review, and a tally only organizers see until they publish | **Comments.** Signed-in, escaped, rate limited; authors withdraw, organizers hide with a reason |
+
+#### Why T3 is evidence, not a claim
+
+`run.py` has checks for T1 and T2 only, so any report that claims T3 ends with
+`note: claimed but not verified: T3`. We keep `.dogfood.toml` at `claimed = ["T1", "T2"]`, the
+tiers the official receipt can prove, and give T3 its own receipt in the same format:
+`python3 scripts/t3_check.py .dogfood.toml` against `docker compose up` prints 15 checks, committed
+as [`acceptance-report-t3.txt`](acceptance-report-t3.txt), and `tests/http/community.test.ts` covers
+the rest. If the organizers prefer T3 in the claim, it is one line.
+
+**Not built:** T4's webhooks, certificates and embeddable gallery. Signed, verifiable results and
+the JSON API cover part of it. See [section 13](#13-honest-limitations).
 
 ---
 
@@ -344,6 +379,42 @@ The organizer sees all of this on **Results**, as a raw-versus-normalized table 
 movement and every judge's offset. The same numbers are in the results CSV, and the test
 *reproduces the documented numbers* pins them.
 
+### How sure the ranking is
+
+Next to every rank, Forgeboard shows a **90% interval** from 400 seeded simulations that keep the
+event's judge–project layout, **refits the ranking without each judge** in turn, and marks pairs
+at the prize line that are **statistical ties**. On the fixture the honest answer is that the
+podium is not settled: one review carries about 0.61 points of noise, Iron Switch's interval is
+1–13, first place survives removing any one judge in 22 of 29 refits, and places 1–2, 2–3 and 3–4
+are all ties. The judges who decide first place are named, including the flat 4/4/4 judge
+`jdg_07`. See [JUDGING.md, *How sure the ranking is*](JUDGING.md#how-sure-the-ranking-is).
+
+### A second opinion: pairwise
+
+Each judge's own scores become comparisons (A above B means that judge prefers A), and judges can
+add explicit choices in **compare mode**. A Bradley–Terry fit over them ranks projects inside each
+judge's scale, so leniency cancels out and the flat 4/4/4 judge contributes nothing. On the fixture:
+239 implied comparisons, the same winner as the rubric ranking (Iron Switch, unbeaten 16–0), and
+Spearman ρ = 0.87. A seeded study shows it is steadier under bias but less accurate on its own, so it
+stays the second opinion. See [JUDGING.md](JUDGING.md#a-second-opinion-pairwise-with-bradleyterry).
+
+![Compare mode: two of a judge's assigned projects side by side, with one button each](docs/screens/compare-mode.png)
+
+### Results anyone can check
+
+- **The method is fixed before anyone sees a score.** The first stored score writes a fingerprint
+  of the method, λ, scale and weights to the audit trail; publishing compares it and says
+  "method unchanged" or "method changed" on the public results page.
+- **Published results are signed** with the instance's Ed25519 key (`node:crypto`, no
+  dependency). `GET /events/<slug>/results.json` gives the document, the signature and the public
+  key; `node src/cli.ts verify-results results.json` checks it offline.
+- **The results capsule** is one HTML file an organizer downloads and can hand to anyone. Opened in
+  a browser with no server and no network, it checks the signature with WebCrypto, checks the
+  embedded reviews against the signed fingerprint, and **refits the ranking** itself.
+- **The audit trail is hash-chained.** Every entry carries the SHA-256 of the one before it, so an
+  edit to the database file, around the append-only triggers, breaks every later hash.
+  `node src/cli.ts verify-audit` and the Audit page report the first entry that does not verify.
+
 ### The fixture's awkward cases, and what we did about each
 
 | Case | What the data shows | What Forgeboard does |
@@ -403,6 +474,8 @@ the same function serves the HTML form, the JSON API and the tests.
 ├── README.md  ARCHITECTURE.md  DATA-MODEL.md  JUDGING.md  THREAT-MODEL.md  DEMO-SCRIPT.md
 ├── .dogfood.toml           where things are, for the checker (claims T1 and T2)
 ├── acceptance-report.txt   the checker's output, committed
+├── acceptance-report-t3.txt  scripts/t3_check.py's output (T3, same format), committed
+├── .github/workflows/ci.yml  types, tests, checker diff, signed-results verify, network off
 ├── docker-compose.yml      one command, demo mode on
 ├── Dockerfile              node:24-alpine, no npm install, runs as a non-root user
 ├── LICENSE                 MIT
@@ -410,18 +483,22 @@ the same function serves the HTML form, the JSON API and the tests.
 ├── src/
 │   ├── server.ts  boot.ts  cli.ts  config.ts
 │   ├── http/      app, context (cookies, body, CSRF), router, rate limit, static files
-│   ├── routes/    public, auth, teams, judge, organize, admin, api
+│   ├── routes/    public, auth, teams, judge, organize, community (vote, comments), admin, api
 │   ├── domain/    the rules: access, accounts, events, teams, projects, judging, assignment,
-│   │              rubric, normalization, results, progress, exports, fixtures, audit, demo
-│   ├── views/     HTML as escaped template literals
-│   ├── db/        store (prepared statements, transactions), migrations/001_initial.sql
+│   │              rubric, normalization, uncertainty, results, commitment, signing, evidence,
+│   │              pairwise, compare, voting, comments, progress, exports, fixtures,
+│   │              audit (hash-chained), demo
+│   ├── views/     HTML as escaped template literals; capsule.ts is the self-verifying results file
+│   ├── db/        store (prepared statements, transactions), migrations/001 schema, 002 evidence, 003 community, 004 pairwise
 │   └── util/      errors, forms, CSV, time, tokens
 ├── static/        app.css, app.js (about 70 lines of progressive enhancement), favicon
 ├── tests/
-│   ├── unit/      normalization, assignment, deadline, data and schema, utilities
-│   └── http/      checker, authorization matrix, lifecycle, organizer, security, crawl, buttons
-├── research/      the normalization simulation and its seeded output
-└── scripts/       browser-check.ts (headless Chrome), offline-check.sh (network off)
+│   ├── unit/      normalization, uncertainty, pairwise, evidence, assignment, deadline, data, utilities
+│   └── http/      checker, authorization matrix, lifecycle, organizer, security, crawl, buttons,
+│                  evidence (signed results, capsule, CLI), community (voting, codes, comments), compare
+├── research/      the normalization and pairwise simulations and their seeded output
+├── docs/screens/  the screenshots in this README
+└── scripts/       browser-check.ts (headless Chrome), offline-check.sh (network off), t3_check.py
 ```
 
 ---
@@ -433,13 +510,15 @@ All of these were run on the final code in this repository.
 | Check | Result | Reproduce with |
 |---|---|---|
 | Official checker against a fresh `docker compose up` | **7 of 7 PASS**, `claimed T1 T2, verified T1 T2`, byte-identical to the committed report | `python3 run.py .dogfood.toml` |
-| Our test suite | **145 of 145 pass**: about 12 s in `node:24-alpine`, about 20 s on a laptop | `npm test`, or the Docker command in [step 4](#step-4-run-our-tests-with-nothing-but-docker) |
+| T3 checks, same style, against `docker compose up` | **15 of 15 PASS** ([`acceptance-report-t3.txt`](acceptance-report-t3.txt)): ballot page public, tally hidden from public and participants, judges refused, own project refused, one ballot per account, shuffled order, comments signed-in and escaped, take-down refused to others, votes CSV, refusals audited | `python3 scripts/t3_check.py .dogfood.toml` |
+| CI on every push | Types, tests, the official checker diffed against the committed report, publish-then-verify of signed results, and the network-off check | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
+| Our test suite | **197 of 197 pass**: about 16 s in `node:24-alpine` | `npm test`, or the Docker command in [step 4](#step-4-run-our-tests-with-nothing-but-docker) |
 | Type check | Clean under `strict`, `noUncheckedIndexedAccess` and `erasableSyntaxOnly` | `npm install && npm run typecheck` (TypeScript is a development dependency only) |
 | Real browser | **16 of 16**: sign-in by form, the phone menu, copy buttons, two-step confirms, the live dashboard refresh, keyboard scoring, and no JavaScript or console errors on any page | `npm run check:browser` (needs Chrome) |
 | Network off | Builds with `--network none`, runs with no network interface, serves gallery, scores and CSV; egress fails | `sh scripts/offline-check.sh` |
 | Every page, every role | Visitor, participant, judge and organizer pages at desktop and phone width: no console errors, no broken images, no horizontal scroll | Headless Chrome pass during development |
 
-What the 145 tests cover:
+What the 197 tests cover:
 - **The seven checker behaviours**, with the *reason* behind each answer, not only the status code
 - **An authorization matrix**: every role against every protected route and action
 - **A full event lifecycle through the real forms**: create → teams → submit → invite judges → close → auto-assign → score → publish
@@ -448,6 +527,10 @@ What the 145 tests cover:
 - **The importer**: counts, idempotency, the duplicate policy, and all-or-nothing refusal of a bad file
 - **The constraints the schema enforces**, one test each
 - **Normalization**: hand-computed cases, determinism, and a regression on the fixture's numbers
+- **Pairwise**: the Bradley–Terry fixed point checked by hand, finiteness with the prior, recovery of a known order, implied comparisons and ties, the pair picker, and compare mode's own-assignments rule, finality, audit and closing
+- **Certainty**: rank intervals on constructed clear-winner and dead-heat panels, leave-one-judge-out naming the one judge who decides, the reviews-needed formula worked by hand, and the fixture's published figures
+- **T3**: the vote's window, access modes, one ballot per account and code, own-project and judge refusals, hidden then published tallies, per-voter order and its fairness over 4,000 ballots, clusters and voiding, code hashing, reuse and guessing limits; comments' escaping, take-down rights, rate limits
+- **Evidence**: the audit chain catching an edit and a deletion made around the triggers, signatures failing on one changed digit or another key, the method commitment, and the capsule and CLI verifying a real published snapshot end to end
 
 ---
 
@@ -491,6 +574,8 @@ What the 145 tests cover:
 | `import <fixtures.json>` | Bulk import of an event: validated first, then written all or nothing |
 | `password-link <email>` | Account recovery without a mail server |
 | `make-admin <email>` | Give an account administrator access |
+| `verify-audit` | Recompute the whole audit hash chain and report the first entry that does not verify |
+| `verify-results <file>` | Check a signed `results.json` or a results capsule offline: signature, inputs fingerprint and a refit. Needs no database |
 
 Operations in brief: boot is idempotent (migrate, generate the secret once, import if asked, seed
 demo mode or print the first-administrator link). `GET /healthz` runs a query and backs the
@@ -518,13 +603,16 @@ A platform you cannot leave is a trap, so both directions are first-class.
 
   | `kind` | Contents |
   |---|---|
-  | `results` | The ranking with raw means, normalized scores and raw ranks |
+  | `results` | The ranking with raw means, normalized scores, raw ranks, 90% rank intervals and top-three share |
   | `reviews` | Every review with each criterion, the weighted score and the comment |
   | `projects` | Every project, including drafts and replaced ones |
   | `judges` | Tracks, progress, fitted offset and flags |
   | `assignments` | Who reviews what, and how each assignment was made |
+  | `votes` | Every community-vote ballot: when, account or code batch, approved projects, voided and why, address group |
   | `audit` | The event's full audit trail |
 
+- **Signed results**: `GET /events/<slug>/results.json` (public once published) and the organizer's
+  self-verifying results capsule. See [section 5](#results-anyone-can-check).
 - **The whole database** with `cli.ts backup`: one plain SQLite file, every table described in
   [DATA-MODEL.md](DATA-MODEL.md).
 - **JSON** for reads and the main writes. `GET /api` lists them:
@@ -534,6 +622,11 @@ A platform you cannot leave is a trap, so both directions are first-class.
   | `GET /api/me` | You, and your roles per event |
   | `GET /api/events`, `GET /api/events/{id}` | Public: events with tracks, prizes and rubric |
   | `GET /api/events/{id}/results` | Public once published |
+  | `GET /events/{slug}/results.json` | Public once published: the signed results document, signature and public key |
+  | `GET /api/events/{id}/vote` | The vote's window and phase; the tally for organizers, and for everyone once published |
+  | `POST /events/{slug}/vote` | Cast a ballot (JSON: `pick` = project ids; `code` in codes mode) |
+  | `POST /projects/{id}/comments` | Comment on a public project (JSON: `body`), signed in |
+  | `GET /organize/{slug}/results/capsule.html` | Organizers: the self-verifying results file with pseudonymized inputs |
   | `GET /api/events/{id}/progress` | Organizers |
   | `GET /api/projects?q=&event=&track=&sort=&page=`, `GET /api/projects/{id}` | The public gallery, and one project if you may see it |
   | `POST /projects/new?event={id}`, `POST /projects/{id}/edit` | Participants, JSON body, deadline enforced, `version` for conflict detection |
@@ -549,7 +642,7 @@ You need **Node 24 or later**: it runs TypeScript directly and ships SQLite.
 ```sh
 FORGEBOARD_DEMO=1 npm start      # http://localhost:8080, data in ./data/forgeboard.db
 npm run dev                      # the same, restarting on changes, data in ./data/dev.db
-npm test                         # 145 tests
+npm test                         # 197 tests
 npm install && npm run typecheck   # type check; installs TypeScript, the only (dev) dependency
 npm run check:browser            # the 16 headless Chrome checks
 npm run check:offline            # the network-off proof (needs Docker)
@@ -580,8 +673,8 @@ forward-only migration, `src/db/migrations/002_….sql`; the shipped schema is n
 
 | Criterion | Weight | Evidence in this repository |
 |---|---|---|
-| **Tier completion and correctness** | 40% | [`acceptance-report.txt`](acceptance-report.txt): 7 of 7. [`.dogfood.toml`](.dogfood.toml) claims exactly T1 and T2, and [section 13](#13-honest-limitations) lists what is missing. 145 tests, including the lifecycle through the real forms |
-| **Judging integrity** | 25% | Isolation in the domain layer, tested as a matrix ([section 4](#4-who-can-see-what-backend-enforced-isolation)). A normalization method with evidence and stated limits ([JUDGING.md](JUDGING.md)). An append-only audit trail an organizer reads in plain sentences, including refused attempts. Abuse considered up front ([THREAT-MODEL.md](THREAT-MODEL.md)) |
+| **Tier completion and correctness** | 40% | [`acceptance-report.txt`](acceptance-report.txt): 7 of 7. [`.dogfood.toml`](.dogfood.toml) claims exactly T1 and T2; T3 is built with its own 15-check receipt ([`acceptance-report-t3.txt`](acceptance-report-t3.txt)), and [section 13](#13-honest-limitations) lists what is missing. 197 tests, including the lifecycle through the real forms |
+| **Judging integrity** | 25% | Isolation in the domain layer, tested as a matrix ([section 4](#4-who-can-see-what-backend-enforced-isolation)). A normalization method with evidence and stated limits, rank intervals and a leave-one-judge-out check ([JUDGING.md](JUDGING.md)). The method fixed when scoring starts. Signed results that verify and refit offline. A hash-chained, append-only audit trail an organizer reads in plain sentences, including refused attempts. Abuse considered up front ([THREAT-MODEL.md](THREAT-MODEL.md)) |
 | **Adoptability and operability** | 20% | One command, network off, seeded with the fixtures. Zero runtime dependencies. Production steps, settings, backup and recovery ([section 8](#8-running-it-for-a-real-event)). Import and export at every stage ([section 9](#9-getting-data-in-and-out)). MIT |
 | **Code quality and innovation** | 15% | One-way layering, a schema that enforces its own invariants ([DATA-MODEL.md](DATA-MODEL.md)), strict TypeScript with no build step, and the decisions in [ARCHITECTURE.md](ARCHITECTURE.md), each with the cost we accepted |
 
@@ -589,18 +682,23 @@ forward-only migration, `src/db/migrations/002_….sql`; the shipped schema is n
 
 | Challenge | Status |
 |---|---|
-| Normalization Proof | **Done.** The method, derivation, worked example, simulation evidence on the fixture's layout and the fixture's numbers are in [JUDGING.md §3](JUDGING.md#3-normalization-correcting-for-harsh-and-generous-judges). Raw and normalized scores and rank changes are on the organizer's Results page and in the results CSV |
-| Threat Model | **Done.** [THREAT-MODEL.md](THREAT-MODEL.md): late teams, curious judges, colluding judges, organizers under pressure, credential stuffing, CSRF, injected scripts, CSV formulas and session theft, each with where it is stopped, plus what is *not* defended |
+| Normalization Proof | **Done.** The method, derivation, worked example, simulation evidence on the fixture's layout and the fixture's numbers are in [JUDGING.md §3](JUDGING.md#3-normalization-correcting-for-harsh-and-generous-judges). Raw and normalized scores and rank changes are on the organizer's Results page and in the results CSV, with 90% rank intervals and a leave-one-judge-out check. Published results are signed and refit themselves in the results capsule |
+| Threat Model | **Done.** [THREAT-MODEL.md](THREAT-MODEL.md): late teams, curious judges, colluding judges, organizers under pressure, ballot stuffing, code guessing, sock puppets, bandwagons, position bias, comment trolls, credential stuffing, CSRF, injected scripts, CSV formulas, session theft and history rewrites, each with where it is stopped, plus what is *not* defended |
 | API First | Partial and **not claimed**: the JSON API covers reads and the main writes, but not every UI action, and there is no OpenAPI document |
-| Pairwise Mode | Not attempted. JUDGING.md §7 sketches how a Bradley–Terry mode would fit |
+| Pairwise Mode | **Done.** A Bradley–Terry fit (MM algorithm, with a prior) over comparisons implied by each judge's own scores plus judges' choices in **compare mode**, which serves the least-compared, closest pair among a judge's assignments. Shown beside the rubric ranking with Spearman agreement; on the fixture ρ = 0.87 and the same winner. A seeded study on the fixture's layout shows why it is the second opinion, not the default ([JUDGING.md](JUDGING.md#a-second-opinion-pairwise-with-bradleyterry)) |
 
 ---
 
 ## 13. Honest limitations
 
-- **T3 and T4 are not built.** There is no community voting and no comments, and no webhooks,
-  certificates or embeddable widget. The acceptance checker only tests T1 and T2, and we claim
-  exactly those.
+- **T4 is not built**: no webhooks, certificates or embeddable widget. T3 is built but claimed only
+  as evidence (see [Why T3 is evidence](#why-t3-is-evidence-not-a-claim)).
+- **Voting in accounts mode is only as strong as sign-up.** Anyone can create accounts, so one
+  person can vote several times from several accounts; address clusters and voiding make it
+  visible, not impossible. For a real event, use voter codes. A code handed to someone else is
+  a ballot handed to someone else.
+- **No email-gated or open-link voting.** Codes replace email (there is no mail server), and an
+  open link cannot be defended against stuffing, so it is not offered.
 - **The JSON API does not cover every action**, and there is no OpenAPI document.
 - **No email.** Invitations, judge invites and password resets are one-time links a person passes
   on. That keeps the portal offline and dependency-free, but an administrator handles lost
@@ -616,6 +714,12 @@ forward-only migration, `src/db/migrations/002_….sql`; the shipped schema is n
 - **Normalization is a model fit, not proof of fairness.** A judge whose projects were all genuinely
   strong looks like a generous judge. The assumptions are in
   [JUDGING.md](JUDGING.md#limits-stated-plainly).
+- **Rank intervals are a model's answer.** They assume the review noise is alike across judges
+  and ignore the uncertainty in the judge offsets themselves, so they are, if anything, too narrow.
+- **A signature proves which instance published a document, not that its operator was honest.**
+  The signing key lives in the database (so backups carry it). Someone who controls the server
+  before publication, or holds the key, can publish anything. The audit chain cannot detect the
+  newest entries being cut off before a published document anchors them.
 - **Demo mode ships known credentials.** They are clearly labelled, off unless enabled, and must stay
   off for real events.
 

@@ -27,10 +27,11 @@ the demo sign-ins. All passwords are `forgeboard-demo`. Use one browser window p
 | 3:20 | Jude | Score the project 4, 5, 3, add a comment, **Submit review** | "Radio groups, keyboard-friendly, weights shown." |
 | 3:40 | terminal | `curl -H 'Cookie: session=jdg_b_demo_44de83a1c9f06b72' 'localhost:8080/api/judge/scores?judge=jdg_24'` | "On the fixture event, judge B asks for judge A's scores: 403 from the backend." |
 | 3:50 | organizer `organizer@forgeboard.local` | Sample Hack 2026 → **Audit trail**, show *Refused access attempts* | "The organizer sees who tried, and what." |
-| 4:05 | organizer | Sample Hack 2026 → **Results** | "On the fixture: raw means beside normalized scores, rank moves, judge offsets. `jdg_07`'s 4/4/4 is flagged 'identical scores'." |
-| 4:25 | admin | Demo Night → **Results → Publish results** | "Publishing freezes the method, λ and weights into a snapshot and closes judging." |
-| 4:40 | visitor, then admin | Demo Night → **Results**. Then, as admin, the **Export** tab | "Results are public now. Organizers can export every stage to CSV." |
-| 4:50 | terminal | `python3 run.py .dogfood.toml` | "And the official checker: T1 and T2 verified." |
+| 4:00 | organizer | Sample Hack 2026 → **Results**, scroll to **How sure is this ranking?** | "Raw means beside normalized scores, and a 90% range for every place. First place survives removing any one judge in 22 of 29 refits, the top three are statistical ties, and it names the judges who decide first place, including `jdg_07`, the flat 4/4/4 judge." |
+| 4:15 | participant `priya1@example.org` | Sample Hack 2026 → **Vote for your favourites**: tick two projects, **Cast my ballot** | "Community vote. My own project is on the ballot but cannot be picked, the order is drawn for me alone, and the tally stays hidden until the organizers publish it." |
+| 4:25 | admin | Demo Night → **Results → Publish results** | "Publishing freezes the method, λ and weights, closes judging, and signs the result with Ed25519." |
+| 4:35 | organizer | Sample Hack 2026 → **Results → Publish results → Download signed results capsule**. Turn Wi-Fi off and open the file | "One HTML file, no server: it checks its own signature, its inputs and refits the ranking in the browser. Three green ticks." |
+| 4:50 | terminal | `python3 run.py .dogfood.toml` then `python3 scripts/t3_check.py .dogfood.toml` | "The official checker: T1 and T2 verified. Our T3 checks in the same format: 15 of 15." |
 
-If time is short, cut the prize and the second teammate. Never cut the 403, the deadline
-refusal or the publish.
+If time is short, cut the prize, the second teammate and the Demo Night publish. Never cut the
+403, the deadline refusal, the certainty section or the capsule.
