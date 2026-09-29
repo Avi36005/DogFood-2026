@@ -234,6 +234,7 @@ export interface JudgesView {
   judges: Progress['judges'];
   tracks: TrackRow[];
   inviteLink?: { email: string; url: string } | null;
+  imported?: { name: string; email: string; invite_url: string }[];
   errors?: Record<string, string>;
   values?: Record<string, string | string[]>;
 }
@@ -268,6 +269,11 @@ ${view.inviteLink ? notice('success', html`Send this one-time link to ${view.inv
         ${button('Invite judge')}
       </form>
       <p class="hint">A judge cannot be on a team in this event, and cannot also organize it.</p>`)}
+    ${section('Import many judges', html`${view.imported ? notice('success', html`${view.imported.length} judge(s) imported. Send each their one-time link; only fingerprints are stored, so copy them now.<ul class="plain">${view.imported.map((j) => html`<li>${j.name} &lt;${j.email}&gt;: <code>${j.invite_url}</code></li>`)}</ul>`, 'Imported.') : ''}
+      <form method="post" action="/organize/${event.slug}/judges/import" class="stack-form" novalidate>${csrf(ctx)}
+        ${textarea({ name: 'csv', label: 'One judge per line: name,email,tracks', rows: 6, value: typeof view.values?.csv === 'string' ? view.values.csv : '', hint: 'Tracks are names or ids separated by ";"; leave empty for every track. All lines are checked first: one bad line and nothing is imported.', error: view.errors?.csv })}
+        ${button('Import judges', { variant: 'secondary' })}
+      </form>`)}
   </aside>
 </div>`, { lead: 'Who judges, and which tracks they cover.' });
 }

@@ -4,7 +4,7 @@ import { commitmentStatus } from '../domain/commitment.ts';
 import { pairwiseSummary } from '../domain/compare.ts';
 import { currentEvidence } from '../domain/evidence.ts';
 import { addOrganizer, addPrize, addTrack, closeSubmissionsNow, getEvent, listCriteria, listEvents, listOrganizers, listPrizes, listTracks, removePrize, removeTrack, updateEvent } from '../domain/events.ts';
-import { assignManually, autoAssign, inviteJudge, listAssignments, listJudges, removeJudge, setJudgeTracks, unassign } from '../domain/judging.ts';
+import { assignManually, autoAssign, importJudges, inviteJudge, listAssignments, listJudges, removeJudge, setJudgeTracks, unassign } from '../domain/judging.ts';
 import { eventProgress } from '../domain/progress.ts';
 import { chooseLiveSubmission, duplicateGroups, eventProjects } from '../domain/projects.ts';
 import { computeStandings, listSnapshots, publishResults, unpublishResults } from '../domain/results.ts';
@@ -148,6 +148,19 @@ export const organizeRoutes: RouteModule = (router, { store, config }) => {
       const url = `${config.publicUrl}/judge-invite/${token}`;
       if (ctx.wantsJson) return ctx.json({ judge: { id: user.id, email: user.email }, invite_url: url }, 201);
       ctx.html(judgesPage(ctx, { event, judges: listJudges(store, event.id), tracks: listTracks(store, event.id), inviteLink: { email: user.email, url } }), 201);
+    } catch (error) {
+      if (!(error instanceof ValidationError) || ctx.wantsJson) throw error;
+      ctx.html(judgesPage(ctx, { event, judges: listJudges(store, event.id), tracks: listTracks(store, event.id), errors: error.fields, values: body as Record<string, string | string[]> }), 422);
+    }
+  });
+
+  router.post('/organize/:slug/judges/import', async (ctx) => {
+    const event = getEvent(store, ctx.params.slug as string);
+    const body = await ctx.body();
+    try {
+      const invited = importJudges(store, ctx.actor, event, body).map((j) => ({ name: j.name, email: j.email, invite_url: `${config.publicUrl}/judge-invite/${j.token}` }));
+      if (ctx.wantsJson) return ctx.json({ imported: invited.length, judges: invited }, 201);
+      ctx.html(judgesPage(ctx, { event, judges: listJudges(store, event.id), tracks: listTracks(store, event.id), imported: invited }), 201);
     } catch (error) {
       if (!(error instanceof ValidationError) || ctx.wantsJson) throw error;
       ctx.html(judgesPage(ctx, { event, judges: listJudges(store, event.id), tracks: listTracks(store, event.id), errors: error.fields, values: body as Record<string, string | string[]> }), 422);

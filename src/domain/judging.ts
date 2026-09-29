@@ -105,6 +105,55 @@ export function inviteJudge(store: Store, actor: Actor, event: EventRow, body: B
   });
 }
 
+export const MAX_IMPORT_ROWS = 500;
+
+/**
+ * Bulk import (T4): many judges at once from CSV lines "name,email,tracks", where tracks are
+ * track names or ids separated by ";" (empty = every track). A header line is skipped. Every
+ * row goes through inviteJudge, with its rules, and the whole import is one transaction: one bad
+ * line and nothing is imported, and the error names every bad line.
+ */
+export function importJudges(store: Store, actor: Actor, event: EventRow, body: Body): { name: string; email: string; token: string }[] {
+  requireOrganizer(store, actor, event, `import judges into ${event.name}`);
+  const text = typeof body.csv === 'string' ? body.csv : '';
+  const lines = text.split(/\r?\n/).map((line, i) => ({ line: i + 1, cells: line.split(',').map((c) => c.trim()) })).filter((l) => l.cells.some(Boolean));
+  if (lines[0] && /^name$/i.test(lines[0].cells[0] ?? '')) lines.shift();
+  if (!lines.length) throw new ValidationError({ csv: 'Paste at least one line: name,email,tracks.' });
+  if (lines.length > MAX_IMPORT_ROWS) throw new ValidationError({ csv: `At most ${MAX_IMPORT_ROWS} judges at a time.` });
+  const tracks = listTracks(store, event.id);
+  const trackId = (ref: string) => tracks.find((t) => t.id === ref || t.name.toLowerCase() === ref.toLowerCase())?.id;
+  const problems: string[] = [];
+  const invited: { name: string; email: string; token: string }[] = [];
+  const seen = new Set<string>();
+  try {
+    store.tx(() => {
+      for (const { line, cells } of lines) {
+        const [name = '', email = '', trackList = ''] = cells;
+        if (cells.length > 3) { problems.push(`line ${line}: expected name,email,tracks (use ";" between tracks)`); continue; }
+        if (seen.has(email.toLowerCase())) { problems.push(`line ${line}: ${email} appears twice`); continue; }
+        seen.add(email.toLowerCase());
+        const refs = trackList.split(';').map((t) => t.trim()).filter(Boolean);
+        const ids = refs.map(trackId);
+        const missing = refs.filter((_, i) => !ids[i]);
+        if (missing.length) { problems.push(`line ${line}: no track called ${missing.join(', ')}`); continue; }
+        try {
+          const { user, token } = inviteJudge(store, actor, event, { name, email, track_ids: ids as string[] });
+          invited.push({ name: user.name, email: user.email, token });
+        } catch (error) {
+          if (!(error instanceof ValidationError)) throw error;
+          problems.push(`line ${line}: ${Object.values(error.fields).join(' ')}`);
+        }
+      }
+      if (problems.length) throw new ValidationError({ csv: problems.slice(0, 20).join('\n') });
+      record(store, actor, { eventId: event.id, action: 'judge.bulk_imported', summary: `${actorLabel(actor)} imported ${invited.length} judge(s) from CSV.` });
+    });
+  } catch (error) {
+    if (error instanceof ValidationError) throw new ValidationError({ csv: `Nothing was imported. ${error.fields.csv ?? Object.values(error.fields).join(' ')}` });
+    throw error;
+  }
+  return invited;
+}
+
 export function setJudgeTracks(store: Store, actor: Actor, event: EventRow, judgeId: string, body: Body): void {
   requireOrganizer(store, actor, event, `change a judge's tracks in ${event.name}`);
   const form = new FormReader(body);
