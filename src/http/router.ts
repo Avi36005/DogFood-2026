@@ -4,6 +4,7 @@ export type Handler = (ctx: Ctx) => void | Promise<void>;
 
 interface Route {
   method: string;
+  path: string;
   parts: string[];
   handler: Handler;
 }
@@ -23,8 +24,13 @@ export class Router {
   }
 
   #add(method: string, path: string, handler: Handler): this {
-    this.#routes.push({ method, parts: path.split('/').filter(Boolean), handler });
+    this.#routes.push({ method, path, parts: path.split('/').filter(Boolean), handler });
     return this;
+  }
+
+  /** Every route, in registration order: what tests/http/openapi.test.ts holds the API document to. */
+  list(): { method: string; path: string }[] {
+    return this.#routes.map(({ method, path }) => ({ method, path }));
   }
 
   match(method: string, pathname: string): Match {

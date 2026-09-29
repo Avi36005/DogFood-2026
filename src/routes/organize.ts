@@ -42,7 +42,6 @@ export const organizeRoutes: RouteModule = (router, { store, config }) => {
       if (!(error instanceof ValidationError) || ctx.wantsJson) throw error;
       return rerender(error.fields, body);
     }
-    if (ctx.wantsJson) return ctx.json({ ok: true });
     ctx.flash('success', success);
     ctx.redirect(back);
   };

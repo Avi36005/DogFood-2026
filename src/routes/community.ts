@@ -150,7 +150,6 @@ export const communityRoutes: RouteModule = (router, { store, secret, codeLimite
       if (!(error instanceof ValidationError) || ctx.wantsJson) throw error;
       return renderAdmin(ctx, event, { values: Object.fromEntries(Object.entries(body).map(([k, v]) => [k, String(v)])), errors: error.fields }, 422);
     }
-    if (ctx.wantsJson) return ctx.json({ ok: true });
     ctx.flash('success', 'Community vote saved.');
     ctx.redirect(`/organize/${event.slug}/voting`);
   });
@@ -167,7 +166,6 @@ export const communityRoutes: RouteModule = (router, { store, secret, codeLimite
   router.post('/organize/:slug/voting/ballots/:id/void', async (ctx) => {
     const event = getEvent(store, ctx.params.slug as string);
     voidBallot(store, ctx.actor, event, ctx.params.id as string, await ctx.body());
-    if (ctx.wantsJson) return ctx.json({ ok: true });
     ctx.flash('info', `Ballot ${ctx.params.id} voided. It stays on record.`);
     ctx.redirect(`/organize/${event.slug}/voting`);
   });
@@ -175,7 +173,6 @@ export const communityRoutes: RouteModule = (router, { store, secret, codeLimite
   router.post('/organize/:slug/voting/publish', (ctx) => {
     const event = getEvent(store, ctx.params.slug as string);
     publishVote(store, ctx.actor, event);
-    if (ctx.wantsJson) return ctx.json({ ok: true });
     ctx.flash('success', 'The community vote is published.');
     ctx.redirect(`/organize/${event.slug}/voting`);
   });
@@ -198,7 +195,6 @@ export const communityRoutes: RouteModule = (router, { store, secret, codeLimite
 
   router.post('/comments/:id/hide', async (ctx) => {
     const project = hideComment(store, ctx.actor, ctx.params.id as string, await ctx.body());
-    if (ctx.wantsJson) return ctx.json({ ok: true });
     ctx.flash('info', 'The comment is taken down. It stays on record for the organizers.');
     ctx.redirect(`/projects/${project.id}#comments`);
   });

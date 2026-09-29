@@ -187,8 +187,12 @@ export class Ctx {
   // Flash messages ------------------------------------------------------------------
 
   flash(kind: Flash['kind'], text: string): void {
+    this.#flashed = { kind, text };
+    if (this.wantsJson) return; // a JSON caller gets the message in the response body instead
     this.setCookie(FLASH_COOKIE, JSON.stringify({ kind, text }), { maxAge: 60 });
   }
+
+  #flashed: Flash | null = null;
 
   takeFlash(): Flash | null {
     const raw = this.#cookies.get(FLASH_COOKIE);
@@ -227,7 +231,17 @@ export class Ctx {
     this.send(200, 'text/csv; charset=utf-8', body, { 'Content-Disposition': `attachment; filename="${filename.replace(/[^\w.-]/g, '_')}"` });
   }
 
+  /**
+   * After a form action a browser follows the redirect. A script that sent JSON gets JSON
+   * instead: the action is done, here is what the page would have said and where it would go.
+   * This is what makes every form in the UI an API call as well (see /api/openapi.json).
+   */
   redirect(location: string, status = 303): void {
+    if (status === 303 && this.method !== 'GET' && this.wantsJson) {
+      const flash = this.#flashed;
+      this.json({ ok: flash?.kind !== 'error', location, ...(flash ? { message: flash.text } : {}) });
+      return;
+    }
     this.send(status, 'text/plain; charset=utf-8', `Redirecting to ${location}`, { Location: location });
   }
 

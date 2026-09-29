@@ -39,7 +39,6 @@ export const judgeRoutes: RouteModule = (router, { store }) => {
   router.post('/judge/:slug/compare', async (ctx) => {
     const event = getEvent(store, ctx.params.slug as string);
     recordChoice(store, ctx.actor, event, await ctx.body());
-    if (ctx.wantsJson) return ctx.json({ ok: true });
     ctx.redirect(`/judge/${event.slug}/compare`);
   });
 

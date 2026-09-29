@@ -13,6 +13,9 @@ import { organizeRoutes } from './routes/organize.ts';
 import { publicRoutes } from './routes/public.ts';
 import { teamRoutes } from './routes/teams.ts';
 
+/** Every route module, in the order the router tries them. */
+export const ROUTE_MODULES = [publicRoutes, authRoutes, teamRoutes, judgeRoutes, organizeRoutes, communityRoutes, adminRoutes, apiRoutes];
+
 export interface Running {
   server: http.Server;
   booted: Booted;
@@ -22,7 +25,7 @@ export interface Running {
 
 export async function start(config: Config): Promise<Running> {
   const booted = await boot(config);
-  const handler = createApp(booted.store, config, booted.secret, [publicRoutes, authRoutes, teamRoutes, judgeRoutes, organizeRoutes, communityRoutes, adminRoutes, apiRoutes]);
+  const handler = createApp(booted.store, config, booted.secret, ROUTE_MODULES);
   const server = http.createServer({ requestTimeout: 30_000, headersTimeout: 15_000 }, handler);
   await new Promise<void>((resolve) => server.listen(config.port, config.host, resolve));
   const address = server.address();
